@@ -36,6 +36,7 @@ option(KRKR2_ENABLE_UNRAR       "Build the Windows unrar.dll backend"        OFF
 option(KRKR2_ENABLE_OPENCV      "Build the (heavier) OpenCV code paths"      OFF)
 option(KRKR2_ENABLE_FFWAVE      "Build the ffmpeg-backed generic wave decoder (mp3/aac/...)" ON)
 option(KRKR2_ASAN               "Build with AddressSanitizer"                OFF)
+option(KRKR2_BUNDLE             "Link for shipping with the libraries beside the executable (scripts/make-bundle.sh)" OFF)
 set(KRKR2_SDL2_PREFIX "" CACHE PATH
 	"Prefix of an SDL2 2.x installation to build against (e.g. ~/.local/sdl2). \
 Empty uses whatever pkg-config finds; note that sdl2-compat (SDL2 API on SDL3) \
@@ -332,8 +333,27 @@ if(EXISTS ${KRKR2_CORE_DIR}/environ/sdl/main.cpp)
 			-Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=realloc -Wl,--wrap=calloc)
 	endif()
 	# A local SDL2 build lives outside the loader's default search path.
-	if(KRKR2_SDL2_PREFIX AND NOT KRKR2_TARGET_SWITCH)
+	if(KRKR2_SDL2_PREFIX AND NOT KRKR2_TARGET_SWITCH AND NOT KRKR2_BUNDLE)
 		target_link_options(krkr2 PRIVATE "-Wl,-rpath,${KRKR2_SDL2_PREFIX}/lib")
+	endif()
+	# Bundle mode: the executable is meant to be shipped with its own libraries
+	# in "lib" beside it (scripts/make-bundle.sh fills that in), so it looks for
+	# them relative to itself ($ORIGIN) instead of at any path of this machine,
+	# and the C++ runtime is linked in rather than taken from the target's
+	# libstdc++ (a second ABI axis, GLIBCXX_*, that a copy of the binary would
+	# otherwise depend on).  glibc itself stays dynamic on purpose: static glibc
+	# breaks the dlopen()s this port needs (the GL/EGL driver, the audio backends,
+	# fontconfig), and it is what sets the lowest glibc the binary can run on -
+	# see the "Running it on another machine" note in readme.md.
+	if(KRKR2_BUNDLE AND NOT KRKR2_TARGET_SWITCH)
+		# BUILD_WITH_INSTALL_RPATH replaces the runpath CMake computes from this
+		# machine's link directories (which contains absolute paths like
+		# ~/.local/sdl2/lib - useless, and wrong, in a bundle).
+		set_target_properties(krkr2 PROPERTIES
+			BUILD_WITH_INSTALL_RPATH TRUE
+			INSTALL_RPATH "$ORIGIN/lib;$ORIGIN")
+		target_link_options(krkr2 PRIVATE -static-libstdc++ -static-libgcc)
+		message(STATUS "Bundling: $ORIGIN/lib runpath, static libstdc++/libgcc")
 	endif()
 	# Switch homebrew ships as an .nro produced from the linked ELF.
 	if(KRKR2_TARGET_SWITCH)

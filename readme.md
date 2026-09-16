@@ -85,6 +85,58 @@ and a register dump *at the moment it is thrown*, before the script's own
 and it appears even when the script handles the error.  A game that is really
 failing says so in its own words after that, and the exit status is non-zero.
 
+#### Running it on another machine
+
+A binary built here runs only on a machine whose libraries are at least as new as
+the ones it was built against.  Measured on the pair this was developed on (a
+container with glibc 2.43, run on a Debian 13 host with glibc 2.41):
+
+| what the binary asks for | what the host has |
+|---|---|
+| `GLIBC_2.43` (symbol versions in libc/libm) | glibc 2.41 - **cannot be fixed by copying files** |
+| `GLIBCXX_3.4.36` (libstdc++) | 3.4.33 |
+| `libjpeg.so.8` | `libjpeg.so.62` |
+| `libavcodec.so.63` | `libavcodec.so.61` |
+
+The first two are the runtime generation of the *machine*, and no packaging scheme
+changes them: the C library has to stay dynamic (this port `dlopen()`s the GL/EGL
+driver, the audio backends and fontconfig, which a static libc breaks), so "link
+everything statically" is not an option and would not lift this floor anyway.  The
+lower two are shared-object names, and those *can* be shipped alongside the
+executable.
+
+So, in order of preference:
+
+1. **Build on (or for) the machine that runs it** - the only thing that removes
+   every axis at once, and what the instructions above describe.  For Debian 13 /
+   Ubuntu 24.04 and later:
+
+       sudo apt install build-essential cmake ninja-build pkgconf git \
+           libsdl2-dev libfreetype-dev libpng-dev libjpeg-dev libturbojpeg0-dev \
+           zlib1g-dev libbz2-dev liblz4-dev libonig-dev libopenal-dev libogg-dev \
+           libvorbis-dev libopusfile-dev libavcodec-dev libavformat-dev \
+           libavutil-dev libswscale-dev libswresample-dev libarchive-dev \
+           libtinyxml2-dev libwebp-dev libxxhash-dev libglvnd-dev
+
+   (Debian and Ubuntu carry the ffmpeg 7 series, which this port builds against.)
+   To support older machines as well, do it in a container of the oldest system you
+   care about: the build machine's glibc is the lowest the binary will start on.
+
+2. **Ship the shared-object names with it** - for machines of the same or a newer
+   generation, which is the usual case for a copy between distributions released
+   around the same time:
+
+       cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DKRKR2_BUNDLE=ON
+       ninja -C build
+       scripts/make-bundle.sh --build build --out krkr2-bundle
+
+   That links the C++ runtime in, puts `$ORIGIN/lib` in the runpath, and copies
+   every library that a desktop machine does not provide itself (a few hundred
+   megabytes, ffmpeg being most of it) next to the executable - copy the directory
+   and run `./krkr2` in it.  The script needs `patchelf`, checks that no dependency
+   was missed, and prints the glibc version the result needs; it cannot lift that
+   floor.
+
 ### Nintendo Switch
 
 Toolchain: [devkitPro](https://devkitpro.org/) with devkitA64 and the switch
