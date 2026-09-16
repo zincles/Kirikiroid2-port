@@ -1,0 +1,21 @@
+// Regression game: an uncaught script error must be *reported*, not crash.
+//
+// The bug that started this: tTJSString's null-empty guard was compiled only for
+// __CODEGUARD__ builds, so when a script raised, the engine's own exception
+// register dump called GetLength() on an empty string and every optimised build
+// died with SIGSEGV instead of printing the error - the process exited 139 and
+// the game showed nothing.  tests/run-all.sh asserts that the error text reaches
+// the log and that the process was not killed by a signal.
+//
+// No Window is created, so the engine terminates by itself once the start-up
+// script ends (a game with a window would keep running, which is correct for a
+// real game but useless for a test).
+
+// touch the empty-string paths first, so the failure below happens with empty
+// strings already live in the register dump the engine prints
+var a = "";
+Debug.message("regress: uncaught length=" + a.length);
+var b = "" + a;
+Debug.message("regress: uncaught concat-length=" + b.length);
+
+throw "intentional-uncaught-error";

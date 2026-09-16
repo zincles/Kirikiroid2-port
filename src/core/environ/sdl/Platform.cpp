@@ -34,6 +34,14 @@
 
 #include "Host.h" // krkr2sdl::HostEverCreatedWindow
 #include "SDLDialog.h" // shared modal-dialog text/edit/IME helpers
+#include "visual/WindowIntf.h" // TVPGetWindowCount
+
+// Defined in base/ScriptMgnIntf.cpp and set around the start-up script (see the
+// same extern in base/SystemIntf.cpp, which uses it to make System.exit() a
+// no-op until the start-up script has run).  TVPExitApplication() below needs it
+// to tell "no start-up script ran" apart from "a script ran and created no
+// window", which the engine treats as a normal end of a scripted game.
+extern bool TVPStartupSuccess;
 
 #ifdef __SWITCH__
 #include <switch.h> // svcGetSystemInfo / SystemInfoType_*
@@ -1252,16 +1260,19 @@ void TVPExitApplication(int code)
 	// A start-up failure reaches here as TVPExitApplication(0): the engine
 	// catches the exception, shows it (which this port mirrors to the console
 	// when no dialog is available) and exits, so the process status would claim
-	// success.  If no game window ever appeared, no game ran: say what to check
-	// and report a failing status, which is what a caller on the command line
-	// (or a launcher on a handheld) needs to see.
-	if (!krkr2sdl::HostEverCreatedWindow()) {
+	// success even though the game never started.  A caller on the command line
+	// (or a launcher on a handheld) needs a failing status; the engine's own
+	// message above already says which input to check, so only point at it.
+	//
+	// A game that ran and produced no window is *not* a failure: the engine ends
+	// such a game by design (TVPTerminateOnNoWindowStartup), which is what a
+	// scripted test does, and there the start-up script did succeed.
+	if (!TVPStartupSuccess && TVPGetWindowCount() == 0) {
 		fprintf(stderr,
-			"krkr2: the game did not start - no startup script ran.\n"
-			"       * a directory must contain startup.tjs\n"
-			"       * an .xp3 must contain it (check the message above)\n"
-			"       * an encrypted archive needs its patch beside it\n"
-			"         (patch.tjs / patch.xp3 / xp3filter.tjs)\n");
+			"krkr2: the game did not start - see the message above; check that the\n"
+			"       path holds startup.tjs (or is an .xp3 containing it), and that an\n"
+			"       encrypted archive has its patch files (patch.tjs / patch.xp3 /\n"
+			"       xp3filter.tjs) next to it.\n");
 		if (code == 0) code = 3;
 	}
 

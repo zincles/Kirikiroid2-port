@@ -1,0 +1,46 @@
+// Regression game: empty strings.
+//
+// tTJSString represents the empty string with a null internal pointer, and
+// several accessors dereferenced it because their null guard was compiled only
+// for __CODEGUARD__ builds.  Every optimisation-enabled build therefore died
+// with SIGSEGV on the first of the checks below (and on the engine's own
+// exception register dump, which is how it was found).  Run by tests/run-all.sh,
+// which requires the final marker in the log and exit code 0.
+//
+// This script deliberately creates no Window: the engine keeps running a game
+// that has a window (and System.exit() during the start-up script is a no-op by
+// design), whereas with no window it terminates as soon as the script ends.
+
+var a = "", b = "";
+
+// length of an empty string
+if (a.length != 0) throw "empty string length is not 0";
+Debug.message("regress: length ok");
+
+// equality: empty vs empty, and empty vs an empty literal
+if (!(a == b)) throw "empty strings do not compare equal";
+if (!(a == "")) throw "empty string does not equal the empty literal";
+if (a != "") throw "empty string compared unequal to the empty literal";
+Debug.message("regress: equality ok");
+
+// concatenation and conversion
+if ((a + "").length != 0) throw "concatenated empty strings are not empty";
+if (("" + 1).length != 1) throw "empty string plus a number did not become 1 character";
+Debug.message("regress: concatenation ok");
+
+// indexing: index 0 of an empty string is the empty string, beyond that is an
+// error (the same rule a non-empty string follows)
+if (a[0] != "") throw "index 0 of an empty string is not the empty string";
+var outOfRange = false;
+try { var c = a[1]; } catch (e) { outOfRange = true; }
+if (!outOfRange) throw "index 1 of an empty string did not raise";
+Debug.message("regress: indexing ok");
+
+// constant folding of literals at parse time (this is where the variant-level
+// null dereference bit: `"" + 1` is folded while the script is parsed)
+var t = "" + 1;
+if (t.length != 1) throw "empty string plus a number did not become 1 character";
+if (("" + "") != "") throw "concatenating two empty literals is not the empty string";
+Debug.message("regress: literal folding ok");
+
+Debug.message("regress: empty-string checks passed");
