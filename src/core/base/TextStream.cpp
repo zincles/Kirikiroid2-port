@@ -267,6 +267,20 @@ public:
 					BufferPtr = Buffer;
 				}
 			}
+			else if(mark[0] != 0 && mark[1] == 0 && mark[2] != 0)
+			{
+				// UTF-16LE without a BOM.  The engine's own writers produce this:
+				// Array.save2 / Dictionary.saveStruct2 write through
+				// TVPCreateStream(TJS_BS_WRITE) + tTVPStringStream, which stores
+				// tjs_char units as they are, and the check above only accepts a
+				// leading BOM.  A text file cannot contain NUL bytes in UTF-8 or
+				// in a multi-byte code page, so NULs on the odd byte positions are
+				// an unambiguous marker for 16-bit little-endian text; the stream
+				// is rewound to the first character (this branch has read three
+				// bytes to look at the marker).
+				Stream->SetPosition(ofs);
+				DirectLoad = true;
+			}
 			else
 			{
 				// check UTF-8 BOM
