@@ -10,3 +10,80 @@ Some string code from [glibc](https://www.gnu.org/s/libc) and [Apple Libc](https
 Real-time texture codec modified from [etcpak](https://bitbucket.org/wolfpld/etcpak.git), [pvrtccompressor](https://bitbucket.org/jthlim/pvrtccompressor), [astcrt](https://github.com/daoo/astcrt)
 
 Android storage accessing code from [AmazeFileManager](https://github.com/arpitkh96/AmazeFileManager)
+
+Building the Linux and Nintendo Switch ports
+--------------------------------------------
+
+The Android project in `project/android` is unchanged.  The ports build from the
+root `CMakeLists.txt` as a static engine core plus plugins; there is no cocos2d-x
+and no vendor tree to fetch.
+
+### Linux (x86_64)
+
+Toolchain: GCC or Clang with C++17, CMake >= 3.16, Ninja, pkg-config and the SDL2
+development package.  On Arch Linux:
+
+    sudo pacman -S --needed base-devel cmake ninja pkgconf git sdl2 freetype2 \
+        libpng libjpeg-turbo libwebp zlib bzip2 liblz4 oniguruma openal libogg \
+        libvorbis opusfile ffmpeg libarchive tinyxml2 xxhash libglvnd
+
+(`ffmpeg` is only needed for video playback; everything else is required.)
+
+    cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    ninja -C build
+
+If the distribution's `sdl2` is the **sdl2-compat** reimplementation (Arch's
+`sdl2` package, `pkg-config --modversion sdl2` reporting 2.32.x, is one), CMake
+says so at configure time, because that library is known to crash inside
+`SDL_ShowMessageBox`.  Everything the engine does works around it -- diagnostics
+go to the console -- but for real message boxes build SDL2 2.x and point the
+build at it with `-DKRKR2_SDL2_PREFIX`, which appends the prefix to the search
+path and sets the runtime path:
+
+    curl -LO https://github.com/libsdl-org/SDL/releases/download/release-2.30.11/SDL2-2.30.11.tar.gz
+    tar xf SDL2-2.30.11.tar.gz
+    cmake -S SDL2-2.30.11 -B SDL2-2.30.11/build -G Ninja \
+        -DCMAKE_INSTALL_PREFIX=$HOME/.local/sdl2 -DSDL_SHARED=ON -DSDL_STATIC=OFF
+    ninja -C SDL2-2.30.11/build install
+    cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DKRKR2_SDL2_PREFIX=$HOME/.local/sdl2
+    ninja -C build
+
+Run a game (a directory holding `startup.tjs`, an `.xp3`, or a `.7z`):
+
+    ./build/krkr2 /path/to/game
+
+An encrypted `.xp3` needs its patch files (`patch.tjs`, `patch.xp3` or
+`xp3filter.tjs`) beside it, and `krkr2` exits with status 3 and says so if the
+archive cannot be decrypted.  A directory without `startup.tjs` is reported the
+same way instead of starting an empty window.
+
+### Nintendo Switch
+
+Toolchain: [devkitPro](https://devkitpro.org/) with devkitA64 and the switch
+portlibs the engine links against:
+
+    sudo pacman -S --needed switch-dev switch-cmake switch-sdl2 switch-mesa \
+        switch-ffmpeg switch-freetype switch-libpng switch-libjpeg-turbo \
+        switch-libwebp switch-zlib switch-bzip2 switch-liblzma switch-lz4 \
+        switch-libzstd switch-oniguruma switch-openal-soft switch-libogg \
+        switch-libvorbis switch-opusfile switch-libarchive switch-tinyxml2 \
+        switch-xxhash switch-pkg-config switch-tools
+
+    cmake -S . -B build-switch -G Ninja -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-switch.cmake -DDEVKITPRO=/opt/devkitpro
+    ninja -C build-switch
+
+The homebrew bundle is `build-switch/krkr2.nro` (about 26 MiB).  Put it in
+`sdmc:/switch/krkr2/`; run it from hbmenu either with the game in the same
+directory (it is picked up automatically) or with the game path as an argument.
+
+### Tests
+
+    tests/run-all.sh --binary ./build/krkr2     # add --with-switch to also build the .nro
+
+Runs everything headless in about half a minute: boot and scripting, directory /
+`.xp3` / encrypted `.xp3` / `.7z` storage, the modal file selector, the API
+conformance suite, archive streaming, and the two regressions that only show up in
+optimised builds.  Compare a `Debug` build with a `RelWithDebInfo` one -- both
+matter, because optimised builds have caught crashes that `Debug` hid.
