@@ -54,6 +54,16 @@ static void ThrowInvalidVMCode()
 static void GetStringProperty(tTJSVariant *result, const tTJSVariant *str,
 	const tTJSVariant &member)
 {
+	// AsStringNoAddRef() returns NULL for an empty string - that is how this
+	// class represents the empty string - and the code below dereferences it, so
+	// resolve the length once and use it for every branch: an empty string has
+	// length 0, index 0 (= the length) yields the empty string, any larger index
+	// is out of range, and "length" is 0.  The guard here used to be compiled
+	// only for __CODEGUARD__ builds, which made every optimisation-enabled build
+	// crash on `var a = ""; a.length`.
+	const tTJSVariantString *valstr = str->AsStringNoAddRef();
+	const tjs_int len = valstr ? valstr->GetLength() : 0;
+
 	// processes properties toward strings.
 	if(member.Type() != tvtInteger && member.Type() != tvtReal)
 	{
@@ -63,27 +73,19 @@ static void GetStringProperty(tTJSVariant *result, const tTJSVariant *str,
 		if(!TJS_strcmp(name, TJS_W("length")))
 		{
 			// get string length
-			const tTJSVariantString * s = str->AsStringNoAddRef();
-#ifdef __CODEGUARD__
-			if(!s)
-				*result = tTVInteger(0); // tTJSVariantString::GetLength can return zero if 'this' is NULL
-			else
-#endif
-			*result = tTVInteger(s->GetLength());
+			*result = tTVInteger(len);
 			return;
 		}
 		else if(name[0] >= TJS_W('0') && name[0] <= TJS_W('9'))
 		{
-			const tTJSVariantString * valstr = str->AsStringNoAddRef();
 			const tjs_char *s = str->GetString();
 			tjs_int n = TJS_atoi(name);
-			tjs_int len = valstr->GetLength();
 			if(n == len) { *result = tTJSVariant(TJS_W("")); return; }
 			if(n<0 || n>len)
 				TJS_eTJSError(TJSRangeError);
 			tjs_char bf[2];
 			bf[1] = 0;
-			bf[0] = s[n];
+			bf[0] = s ? s[n] : 0;
 			*result = tTJSVariant(bf);
 			return;
 		}
@@ -92,16 +94,14 @@ static void GetStringProperty(tTJSVariant *result, const tTJSVariant *str,
 	}
 	else // member.Type() == tvtInteger || member.Type() == tvtReal
 	{
-		const tTJSVariantString * valstr = str->AsStringNoAddRef();
 		const tjs_char *s = str->GetString();
 		tjs_int n = (tjs_int)member.AsInteger();
-		tjs_int len = valstr->GetLength();
 		if(n == len) { *result = tTJSVariant(TJS_W("")); return; }
 		if(n<0 || n>len)
 			TJS_eTJSError(TJSRangeError);
 		tjs_char bf[2];
 		bf[1] = 0;
-		bf[0] = s[n];
+		bf[0] = s ? s[n] : 0;
 		*result = tTJSVariant(bf);
 		return;
 	}
@@ -865,7 +865,7 @@ void tTJSInterCodeContext::ExecuteAsFunction(iTJSDispatch2 *objthis,
 		catch(...)
 		{
 #ifdef ENABLE_DEBUGGER
-			// Œ³‚É–ß‚·
+			// ï¿½ï¿½ï¿½É–ß‚ï¿½
 			DebuggerScopeKey = oldkey;
 			DebuggerRegisterArea = oldra;
 #endif	// ENABLE_DEBUGGER
@@ -879,7 +879,7 @@ void tTJSInterCodeContext::ExecuteAsFunction(iTJSDispatch2 *objthis,
 		}
 
 #ifdef ENABLE_DEBUGGER
-		// Œ³‚É–ß‚·
+		// ï¿½ï¿½ï¿½É–ß‚ï¿½
 		DebuggerScopeKey = oldkey;
 		DebuggerRegisterArea = oldra;
 #endif	// ENABLE_DEBUGGER

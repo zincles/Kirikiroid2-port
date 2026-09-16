@@ -419,9 +419,13 @@ public:
 
 	TJS_CONST_METHOD_DEF(tjs_int, GetLen, ())
 	{
-#ifdef __CODEGUARD__
-		if(!Ptr) return 0; // tTJSVariantString::GetLength can return zero if 'this' is NULL
-#endif
+		// Ptr is NULL for a default-constructed (empty) string - see IsEmpty()
+		// and the default constructor above.  The guard used to be compiled only
+		// for __CODEGUARD__ builds, which made every optimisation-enabled build
+		// dereference NULL here: any script touching an empty string's length
+		// (or the engine's own exception register dump) crashed, e.g.
+		// `var a = ""; a.length`.
+		if(!Ptr) return 0;
 		return Ptr->GetLength();
 	}
 
