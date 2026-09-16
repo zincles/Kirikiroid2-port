@@ -101,6 +101,12 @@ run "touch-input"       60 - "touch-input: done"      -- env \
 	KRKR2_TEST_INPUT="40:fingerdown:100,60;45:fingermove:160,90;50:fingerup:160,90;60:fingerdown:200,120;64:fingerup:200,120;80:pad:a;95:padup:a" \
 	"$binary" tests/touch-input
 run "file-selector-open"  40 - "call 1 returned 1"    -- env KRKR2_DIALOG_KEYS=down,enter "$binary" tests/file-selector/open
+# The ".." row: present in a directory that has a parent (so going up is visible
+# on a game pad), and going up leaves the cursor on the directory that was left.
+run "file-selector-parent-row"    40 - 'fixtures/subdir.*selected="\.\."' \
+	-- env KRKR2_FILESEL_TRACE=1 KRKR2_DIALOG_KEYS=enter,home,enter,esc "$binary" tests/file-selector/open
+run "file-selector-parent-return" 40 - 'fixtures" entries=5.*selected="subdir"' \
+	-- env KRKR2_FILESEL_TRACE=1 KRKR2_DIALOG_KEYS=enter,home,enter,esc "$binary" tests/file-selector/open
 run "file-selector-cancel" 40 - "call 1 returned 0"   -- env KRKR2_DIALOG_KEYS=esc,esc "$binary" tests/file-selector/open
 # The game browser (launcher): with no game it asks, then starts what was picked.
 run "launcher"         120 - "launcher test: 4 passed, 0 failed" -- bash tests/run-launcher-test.sh --build "$(dirname "$binary")"

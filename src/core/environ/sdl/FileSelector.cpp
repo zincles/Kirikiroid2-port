@@ -16,8 +16,14 @@
 
 	Behaviour
 	---------
-	* Lists the current directory, directories first, then files, each sorted
-	  case-insensitively by name; the selected row is the cursor.
+	* Lists the current directory: ".." first (when the directory has a parent,
+	  i.e. not at the top of a volume), then directories, then files, each sorted
+	  case-insensitively by name; the selected row is the cursor.  Activating
+	  ".." goes to the parent, which is the visible equivalent of BACKSPACE and
+	  the only one a game pad has; going up leaves the cursor on the directory
+	  that was left, so up-then-back-in is two keystrokes.  The cursor starts on
+	  the first real entry rather than on "..", so ENTER opens something rather
+	  than leaving the directory.
 	* Open mode: the `filename` argument filters the listing (DOS wildcards and
 	  plain substrings, ';'/space separated alternatives).  The field is that
 	  filter and doubles as the "type to jump" line: typing while the list is
@@ -28,7 +34,7 @@
 	* Navigation: keyboard (UP/DOWN or W/S, PAGEUP/PAGEDOWN, HOME/END,
 	  ENTER/SPACE, BACKSPACE/LEFT, TAB, F1 roots, F2 chooses the current folder
 	  in open mode, ESC), mouse (click to select, click again to activate,
-	  double click, wheel, the buttons, the root label) and game pad
+	  double click, wheel, the buttons, the root label, the ".." row) and game pad
 	  (DPAD/stick, A, B, X, Y, START, BACK, shoulders) -- the Switch has no
 	  keyboard, so the game pad path is the one that matters there.
 	* Roots: TVPGetDriverPath() (the mounted volumes, "/" and $HOME on the
@@ -251,6 +257,9 @@ struct tListEntry {
 	std::string Name;
 	bool Dir = false;
 	tjs_uint64 Size = 0;
+	// The ".." row this dialog puts above everything else; activating it goes to
+	// the parent directory (see Reload()/GoParent()).
+	bool Parent = false;
 };
 
 //---------------------------------------------------------------------------
@@ -378,6 +387,9 @@ private:
 	SDL_Renderer *Renderer;
 	std::string Title, Dir, Status, Result;
 	bool SaveMode = false;
+	// Entry to select after the next Reload(), used by GoParent() (it is cleared
+	// as soon as Reload() has looked at it).
+	std::string Preselect;
 	std::vector<std::string> Roots;
 	size_t RootIndex = 0;
 	std::vector<tListEntry> Entries;
@@ -483,8 +495,11 @@ private:
 
 	void Reload()
 	{
-		const std::string selected = (Cursor >= 0 && Cursor < (int)Entries.size())
-			? Entries[Cursor].Name : std::string();
+		const std::string selected = !Preselect.empty()
+			? Preselect
+			: ((Cursor >= 0 && Cursor < (int)Entries.size())
+				? Entries[Cursor].Name : std::string());
+		Preselect.clear();
 		const std::string filter = ListingFilter();
 		Entries.clear();
 		TVPListDir(Dir, [&](const std::string &name, int mask) {
@@ -500,8 +515,25 @@ private:
 			}
 			Entries.push_back(entry);
 		});
+
+		// ".." goes above everything, when there is somewhere to go: it is what
+		// makes going up discoverable, and on a game pad (a handheld has no
+		// keyboard) it is the only visible way to do it.  At the top of a volume
+		// there is no parent to show - BACKSPACE/LEFT/B and the roots list are
+		// what a user has there.
+		const std::string here = StripTrailingSlash(Dir);
+		const bool has_parent = ParentPath(here) != here;
+		if (has_parent) {
+			tListEntry up;
+			up.Name = "..";
+			up.Dir = true;
+			up.Parent = true;
+			Entries.push_back(up);
+		}
+
 		std::sort(Entries.begin(), Entries.end(),
 			[](const tListEntry &a, const tListEntry &b) {
+				if (a.Parent != b.Parent) return a.Parent;
 				if (a.Dir != b.Dir) return a.Dir;
 				const size_t n = std::min(a.Name.size(), b.Name.size());
 				for (size_t i = 0; i < n; ++i) {
@@ -517,6 +549,16 @@ private:
 		if (!selected.empty()) {
 			for (size_t i = 0; i < Entries.size(); ++i) {
 				if (Entries[i].Name == selected) {
+					Cursor = (int)i;
+					break;
+				}
+			}
+		} else {
+			// Start on the first real entry, not on "..": ENTER would otherwise
+			// leave the directory instead of opening something, and one extra
+			// cursor step is cheaper than a surprise.
+			for (size_t i = 0; i < Entries.size(); ++i) {
+				if (!Entries[i].Parent) {
 					Cursor = (int)i;
 					break;
 				}
@@ -654,6 +696,10 @@ private:
 	{
 		if (Entries.empty()) return;
 		const tListEntry &entry = Entries[Cursor];
+		if (entry.Parent) {
+			GoParent();
+			return;
+		}
 		if (entry.Dir) {
 			EnterDirectory(entry.Name);
 			return;
@@ -711,6 +757,10 @@ private:
 			Cancel();
 			return;
 		}
+		// Going up leaves the cursor on the directory that was just left, so a
+		// round trip (up, then back in) is two keystrokes instead of a search.
+		const size_t slash = current.find_last_of('/');
+		Preselect = (slash == std::string::npos) ? current : current.substr(slash + 1);
 		ChangeDir(parent);
 	}
 
@@ -1276,8 +1326,8 @@ private:
 
 		// hint line
 		const std::string hint = SaveMode
-			? "TAB field   UP/DOWN move   ENTER save   BACKSPACE parent   F1 root   ESC cancel"
-			: "TAB field   UP/DOWN move   ENTER open   BACKSPACE parent   F1 root   F2 folder   ESC cancel";
+			? "TAB field   UP/DOWN move   ENTER save   .. / BACKSPACE parent   F1 root   ESC cancel"
+			: "TAB field   UP/DOWN move   ENTER open   .. / BACKSPACE parent   F1 root   F2 folder   ESC cancel";
 		krkr2sdl::DrawGlyphRun(Renderer, ElideLeft(hint, Panel.w - 2 * Padding),
 			Panel.x + Padding, HintY, dimColor);
 
