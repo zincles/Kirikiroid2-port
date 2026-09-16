@@ -444,6 +444,7 @@ tTVPAtExit TVPDestroyPluginVectorAtExit
 #endif
 //---------------------------------------------------------------------------
 bool TVPLoadInternalPlugin(const ttstr &_name);
+bool TVPUnloadInternalPlugin(const ttstr &_name);
 extern std::set<ttstr> TVPRegisteredPlugins;
 static bool TVPPluginLoading = false;
 void TVPLoadPlugin(const ttstr & name)
@@ -485,24 +486,21 @@ void TVPLoadPlugin(const ttstr & name)
 //---------------------------------------------------------------------------
 bool TVPUnloadPlugin(const ttstr & name)
 {
-	// unload plugin
-#if 0
-	tTVPPluginVectorType::iterator i;
-	for(i = TVPPluginVector.Vector.begin();
-		i != TVPPluginVector.Vector.end(); i++)
-	{
-		if((*i)->Name == name)
-		{
-			if(!(*i)->Uninit()) return false;
-			delete *i;
-			TVPPluginVector.Vector.erase(i);
-			return true;
-		}
-	}
-	TVPThrowExceptionMessage(TVPNotLoadedPlugin, name);
-	return false;
-#endif
-	return true;
+	// Unload a plugin.
+	//
+	// Plugins on this port are the statically linked modules that register
+	// themselves with ncbAutoRegister (see TVPLoadPlugin above, which seals the
+	// dynamic library path), so unloading means unregistering the module's
+	// classes and dropping its name from TVPRegisteredPlugins - the set
+	// Plugins.getList() and the duplicate check in LoadModule() use.
+	//
+	// The previous body was an #if 0'd copy of the Win32 loader that ended in
+	// `return true;`, i.e. unlink() reported success for every name - including
+	// names that were never loaded - and unregistered nothing, so a script that
+	// unlinked a module saw it stay in getList() and stayed unable to re-link it
+	// (LoadModule() rejects an already-registered name).
+	if (name.IsEmpty()) return false;
+	return TVPUnloadInternalPlugin(name);
 }
 //---------------------------------------------------------------------------
 

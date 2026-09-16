@@ -30,3 +30,24 @@ bool ncbAutoRegister::LoadModule(const ttstr &_name)
 	}
 	return false;
 }
+
+bool ncbAutoRegister::UnloadModule(const ttstr &_name)
+{
+	ttstr name = _name.AsLowerCase();
+	if (TVPRegisteredPlugins.find(name) == TVPRegisteredPlugins.end())
+		return false; // not loaded
+	auto it = _internal_plugins.find(name);
+	if (it == _internal_plugins.end())
+		return false;
+	// Mirror of LoadModule(): walk the same per-registration-line lists in the
+	// same order AllUnregist() uses, so a module's classes come back out in the
+	// reverse of the order they went in, then forget the module name.
+	for (int line = 0; line < ncbAutoRegister::LINE_COUNT; ++line) {
+		const std::list<ncbAutoRegister const*> &plugin_list = it->second.lists[line];
+		for (auto i = plugin_list.begin(); i != plugin_list.end(); ++i) {
+			(*i)->Unregist();
+		}
+	}
+	TVPRegisteredPlugins.erase(name);
+	return true;
+}

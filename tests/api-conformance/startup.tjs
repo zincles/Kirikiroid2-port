@@ -754,17 +754,27 @@ check("Plugins.link/getList",
 	});
 
 check("Plugins.unlink",
-	"unlink('csvParser.dll') reports success and drops it from getList",
+	"unlink('csvParser.dll') reports success and drops it from getList, an unknown name reports no unload, and the module can be linked again",
 	function() {
 		var r = Plugins.unlink("csvParser.dll");
 		var list = Plugins.getList();
 		var got = "";
 		for (var i = 0; i < list.count; ++i) got += list[i] + ",";
-		return (r == 1 && got.indexOf("csvparser.dll") < 0) ? true
-			: "unlink returned " + r + " but the module is still registered, list=[" + got + "]"
-			+ " -NOTE- TVPUnloadPlugin's body is inside #if 0 and ends in 'return true;'"
-			+ " (src/core/base/win32/PluginImpl.cpp:481-500), so unlink reports success for"
-			+ " every name and never unregisters anything";
+		if (r != 1) return "unlink of a loaded module returned " + r;
+		if (got.indexOf("csvparser.dll") >= 0)
+			return "the module is still registered, list=[" + got + "]";
+		// a name that was never loaded must report that nothing was unloaded ...
+		var r2 = Plugins.unlink("no-such-plugin.dll");
+		if (r2 != 0) return "unlink of an unknown name returned " + r2 + " (want 0)";
+		// ... and unlinking must leave the module linkable again (LoadModule()
+		// refuses a name that is still registered).
+		Plugins.link("csvParser.dll");
+		var after = Plugins.getList();
+		var got2 = "";
+		for (var j = 0; j < after.count; ++j) got2 += after[j] + ",";
+		if (got2.indexOf("csvparser.dll") < 0)
+			return "re-link after unlink did not register the module, list=[" + got2 + "]";
+		return true;
 	});
 
 check("Plugins surface (saveStruct)",
@@ -773,17 +783,16 @@ check("Plugins surface (saveStruct)",
 		var d = %[alpha: 1];
 		try {
 			d.saveStruct2("savedata/conformance-dict.tjs");
-			return Storages.isExistentStorage("savedata/conformance-dict.tjs") == 1 ? true
-				: "call returned but no file was written";
+			if (Storages.isExistentStorage("savedata/conformance-dict.tjs") == 1) return true;
+			// The member must take objthis as the dictionary and param[0] as the
+			// destination: if it is registered on the class instead, the write
+			// goes to a file named after the argument and this path stays absent.
+			return "call returned but " + "savedata/conformance-dict.tjs" + " was not written";
 		} catch (e) {
 			return "dict.saveStruct2(file) threw: " + e.message
-				+ " -NOTE- saveStruct.cpp registers it with TJS_STATICMEMBER"
-				+ " (NCB_ATTACH_CLASS(DictAdd, Dictionary)), so the member lives on the"
-				+ " Dictionary *class*: Dictionary.saveStruct2(dict, file) is the only"
-				+ " reachable spelling, and it takes param[0] as the file name and the"
-				+ " class object as the data, i.e. it writes a file named after the"
-				+ " dictionary string instead of the dictionary (Array.save2/saveStruct2,"
-				+ " registered without TJS_STATICMEMBER, work as expected)";
+				+ " -NOTE- saveStruct.cpp must register it without TJS_STATICMEMBER"
+				+ " (like the Array counterparts), otherwise the only reachable"
+				+ " spelling is Dictionary.saveStruct2(file) on the class object";
 		}
 	});
 

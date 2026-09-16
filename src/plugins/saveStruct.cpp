@@ -81,9 +81,9 @@ static void quoteOctet(tTJSVariantOctet *octet, tTVPStringStream *writer)
 static void getVariantString(tTJSVariant &var, tTVPStringStream *writer);
 
 /**
- * «‘‚Ì“à—e•\¦—p‚ÌŒÄ‚Ño‚µƒƒWƒbƒN
+ * ï¿½ï¿½ï¿½ï¿½ï¿½Ì“ï¿½ï¿½eï¿½\ï¿½ï¿½ï¿½pï¿½ÌŒÄ‚Ñoï¿½ï¿½ï¿½ï¿½ï¿½Wï¿½bï¿½N
  */
-class DictMemberDispCaller : public tTJSDispatch /** EnumMembers —p */
+class DictMemberDispCaller : public tTJSDispatch /** EnumMembers ï¿½p */
 {
 protected:
 	tTVPStringStream *writer;
@@ -133,7 +133,7 @@ static void getDictString(iTJSDispatch2 *dict, tTVPStringStream *writer)
 	writer->write((tjs_char)']');
 }
 
-// Array ƒNƒ‰ƒXƒƒ“ƒo
+// Array ï¿½Nï¿½ï¿½ï¿½Xï¿½ï¿½ï¿½ï¿½ï¿½o
 static iTJSDispatch2 *ArrayCountProp   = NULL;   // Array.count
 
 static void getArrayString(iTJSDispatch2 *array, tTVPStringStream *writer)
@@ -210,7 +210,7 @@ getVariantString(tTJSVariant &var, tTVPStringStream *writer)
 //---------------------------------------------------------------------------
 
 /**
- * ƒƒ\ƒbƒh’Ç‰Á—p
+ * ï¿½ï¿½ï¿½\ï¿½bï¿½hï¿½Ç‰ï¿½ï¿½p
  */
 class ArrayAdd {
 
@@ -218,11 +218,11 @@ public:
 	ArrayAdd(){};
 
 	/**
-	 * save Œ`®‚Å‚Ì«‘‚Ü‚½‚Í”z—ñ‚Ì•Û‘¶
-	 * @param filename ƒtƒ@ƒCƒ‹–¼
-	 * @param utf true ‚È‚ç UTF-8 ‚Åo—Í
-	 * @param newline ‰üsƒR[ƒh 0:CRLF 1:LF
-	 * @return ÀsŒ‹‰Ê
+	 * save ï¿½`ï¿½ï¿½ï¿½Å‚Ìï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½Í”zï¿½ï¿½Ì•Û‘ï¿½
+	 * @param filename ï¿½tï¿½@ï¿½Cï¿½ï¿½ï¿½ï¿½
+	 * @param utf true ï¿½È‚ï¿½ UTF-8 ï¿½Åoï¿½ï¿½
+	 * @param newline ï¿½ï¿½ï¿½sï¿½Rï¿½[ï¿½h 0:CRLF 1:LF
+	 * @return ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½ï¿½
 	 */
 	static tjs_error TJS_INTF_METHOD save2(tTJSVariant *result,
 										   tjs_int numparams,
@@ -258,11 +258,11 @@ public:
 	}
 
 	/**
-	 * saveStruct Œ`®‚Å‚ÌƒIƒuƒWƒFƒNƒg‚Ì•Û‘¶
-	 * @param filename ƒtƒ@ƒCƒ‹–¼
-	 * @param utf true ‚È‚ç UTF-8 ‚Åo—Í
-	 * @param newline ‰üsƒR[ƒh 0:CRLF 1:LF
-	 * @return ÀsŒ‹‰Ê
+	 * saveStruct ï¿½`ï¿½ï¿½ï¿½Å‚ÌƒIï¿½uï¿½Wï¿½Fï¿½Nï¿½gï¿½Ì•Û‘ï¿½
+	 * @param filename ï¿½tï¿½@ï¿½Cï¿½ï¿½ï¿½ï¿½
+	 * @param utf true ï¿½È‚ï¿½ UTF-8 ï¿½Åoï¿½ï¿½
+	 * @param newline ï¿½ï¿½ï¿½sï¿½Rï¿½[ï¿½h 0:CRLF 1:LF
+	 * @return ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½ï¿½
 	 */
 	static tjs_error TJS_INTF_METHOD saveStruct2(tTJSVariant *result,
 												 tjs_int numparams,
@@ -285,9 +285,9 @@ public:
 	}
 	
 	/**
-	 * saveStruct Œ`®‚Å•¶š—ñ‰»
-	 * @param newline ‰üsƒR[ƒh 0:CRLF 1:LF
-	 * @return ÀsŒ‹‰Ê
+	 * saveStruct ï¿½`ï¿½ï¿½ï¿½Å•ï¿½ï¿½ï¿½ï¿½ï¿½
+	 * @param newline ï¿½ï¿½ï¿½sï¿½Rï¿½[ï¿½h 0:CRLF 1:LF
+	 * @return ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½ï¿½
 	 */
 	static tjs_error TJS_INTF_METHOD toStructString(tTJSVariant *result,
 													tjs_int numparams,
@@ -310,7 +310,7 @@ NCB_ATTACH_CLASS(ArrayAdd, Array) {
 };
 
 /**
- * ƒƒ\ƒbƒh’Ç‰Á—p
+ * ï¿½ï¿½ï¿½\ï¿½bï¿½hï¿½Ç‰ï¿½ï¿½p
  */
 class DictAdd {
 
@@ -318,11 +318,11 @@ public:
 	DictAdd(){};
 
 	/**
-	 * saveStruct Œ`®‚Å‚ÌƒIƒuƒWƒFƒNƒg‚Ì•Û‘¶
-	 * @param filename ƒtƒ@ƒCƒ‹–¼
-	 * @param utf true ‚È‚ç UTF-8 ‚Åo—Í
-	 * @param newline ‰üsƒR[ƒh 0:CRLF 1:LF
-	 * @return ÀsŒ‹‰Ê
+	 * saveStruct ï¿½`ï¿½ï¿½ï¿½Å‚ÌƒIï¿½uï¿½Wï¿½Fï¿½Nï¿½gï¿½Ì•Û‘ï¿½
+	 * @param filename ï¿½tï¿½@ï¿½Cï¿½ï¿½ï¿½ï¿½
+	 * @param utf true ï¿½È‚ï¿½ UTF-8 ï¿½Åoï¿½ï¿½
+	 * @param newline ï¿½ï¿½ï¿½sï¿½Rï¿½[ï¿½h 0:CRLF 1:LF
+	 * @return ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½ï¿½
 	 */
 	static tjs_error TJS_INTF_METHOD saveStruct2(tTJSVariant *result,
 												 tjs_int numparams,
@@ -340,9 +340,9 @@ public:
 	}
 	
 	/**
-	 * saveStruct Œ`®‚Å•¶š—ñ‰»
-	 * @param newline ‰üsƒR[ƒh 0:CRLF 1:LF
-	 * @return ÀsŒ‹‰Ê
+	 * saveStruct ï¿½`ï¿½ï¿½ï¿½Å•ï¿½ï¿½ï¿½ï¿½ï¿½
+	 * @param newline ï¿½ï¿½ï¿½sï¿½Rï¿½[ï¿½h 0:CRLF 1:LF
+	 * @return ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½ï¿½
 	 */
 	static tjs_error TJS_INTF_METHOD toStructString(tTJSVariant *result,
 													tjs_int numparams,
@@ -360,16 +360,21 @@ public:
 };
 
 NCB_ATTACH_CLASS(DictAdd, Dictionary) {
-	RawCallback("saveStruct2", &DictAdd::saveStruct2, TJS_STATICMEMBER);
-	RawCallback("toStructString", &DictAdd::toStructString, TJS_STATICMEMBER);
+	// No TJS_STATICMEMBER: these take objthis as the dictionary to write, exactly
+	// like the Array counterparts above.  Registered as class members,
+	// `dict.saveStruct2(file)`/`dict.toStructString()` did not exist and the only
+	// reachable spelling, Dictionary.saveStruct2(file), passed the class object as
+	// the data and wrote a file named after the argument.
+	RawCallback("saveStruct2", &DictAdd::saveStruct2, 0);
+	RawCallback("toStructString", &DictAdd::toStructString, 0);
 };
 
 /**
- * “o˜^ˆ—Œã
+ * ï¿½oï¿½^ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
  */
 static void PostRegistCallback()
 {
-	// Array.count ‚ğæ“¾
+	// Array.count ï¿½ï¿½ï¿½æ“¾
 	{
 		tTJSVariant varScripts;
 		TVPExecuteExpression(TJS_W("Array"), &varScripts);
@@ -387,7 +392,7 @@ static void PostRegistCallback()
 }
 
 /**
- * ŠJ•úˆ—‘O
+ * ï¿½Jï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½O
  */
 static void PreUnregistCallback()
 {

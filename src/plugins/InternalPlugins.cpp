@@ -17,3 +17,8 @@ bool TVPLoadInternalPlugin(const ttstr &_name)
 {
 	return ncbAutoRegister::LoadModule(TVPExtractStorageName(_name));
 }
+
+bool TVPUnloadInternalPlugin(const ttstr &_name)
+{
+	return ncbAutoRegister::UnloadModule(TVPExtractStorageName(_name));
+}

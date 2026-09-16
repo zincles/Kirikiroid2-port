@@ -2150,6 +2150,12 @@ struct ncbAutoRegister {
 	static void AllRegist()   { for (int line = 0; line < LINE_COUNT; line++) AllRegist(  static_cast<LineT>(line)); }
 	static void AllUnregist() { for (int line = 0; line < LINE_COUNT; line++) AllUnregist(static_cast<LineT>(line)); }
 	static bool LoadModule(const ttstr &_name);
+	/**
+	 * Unregister a module previously loaded with LoadModule() and drop it from
+	 * the registered-plugin set, so Plugins.unlink() can undo Plugins.link().
+	 * Returns false when the module was not loaded.
+	 */
+	static bool UnloadModule(const ttstr &_name);
 protected:
 	virtual void Regist()   const = 0;
 	virtual void Unregist() const = 0;
