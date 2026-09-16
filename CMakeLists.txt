@@ -252,12 +252,10 @@ endif()
 # player behind it comes from movie/FFmpegVideoOverlay.cpp, or from
 # movie/krmovie_unavailable.cpp in builds without ffmpeg movie support.
 list(APPEND KRKR2_VISUAL_W32 ${KRKR2_CORE_DIR}/visual/win32/VideoOvlImpl.cpp)
-# layerExMovie.cpp implements the KiriKiriZ "layerExMovie.dll" extension on top
-# of the Kodi-derived movie/ffmpeg tree (KRMovieLayer etc.), which this port
-# does not build - its video player is movie/FFmpegVideoOverlay.cpp instead.
-# Porting the extension onto that backend is a separate follow-up, so the plugin
-# is left out here (the standard VideoOverlay/movie path games use is provided).
-list(REMOVE_ITEM KRKR2_PLUGINS ${CMAKE_CURRENT_SOURCE_DIR}/src/plugins/layerExMovie.cpp)
+# layerExMovie.cpp (the KiriKiriZ "layerExMovie.dll" extension) is built from
+# src/plugins like the other extensions: it was rewritten to drive this port's
+# movie player (movie/FFmpegVideoOverlay.cpp through the iTVPVideoOverlay
+# interface) instead of the Kodi-derived movie/ffmpeg tree.
 
 set(KRKR2_SOURCES
 	${KRKR2_TJS2} ${KRKR2_BASE} ${KRKR2_BASE_W32}

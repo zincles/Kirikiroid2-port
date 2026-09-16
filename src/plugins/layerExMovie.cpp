@@ -1,59 +1,63 @@
-//#pragma comment(lib, "strmiids.lib")
+//---------------------------------------------------------------------------
+// layerExMovie.dll - the KiriKiriZ extension that plays a movie inside a Layer.
+//
+// Upstream builds this on the Kodi-derived movie tree
+// (movie/ffmpeg/KRMovieLayer.h: KRMovie::VideoPresentLayer plus the KRMovieEvent
+// callback protocol).  That tree is not part of this build; the movie player here
+// is movie/FFmpegVideoOverlay.cpp, which implements the iTVPVideoOverlay
+// interface declared in krmovie.h - the same interface the engine's own
+// VideoOverlay object uses - and it serves what this extension needs:
+//
+//   * GetVideoLayerObject(..., &player) hands back a player that renders into the
+//     two engine textures given to SetVideoBuffer(), which is how the Kodi layer
+//     presented frames here as well (BuildGraph + SetVideoBuffer);
+//   * GetFrontBuffer() brings the current picture into the front texture, so the
+//     extension no longer needs a queue of KRMovieEvent callbacks to know when
+//     to copy: it asks the player once per engine tick (OnContinuousCallback),
+//     refreshes the layer image when the presented frame number changes, and
+//     treats a status change to vsEnded as the end of the movie.
+//
+// The script-visible surface is unchanged: openMovie(filename, alpha),
+// startMovie(loop), stopMovie(), isPlayingMovie() and the onStartMovie /
+// onUpdateMovie / onStopMovie callbacks.
+//
+// The alpha layout is KiriKiriZ's: an alpha movie stores colour in the upper half
+// of the frame and its alpha in the lower half, so the layer takes half the
+// height and the copy uses the colour-aware blend.
+//---------------------------------------------------------------------------
 #include <stdlib.h>
-#ifdef _MSC_VER
-//#include <concrt.h>
-#endif
 #include <stdint.h>
+#include <algorithm>
+
 #include "tjsCommHead.h"
 #include "EventIntf.h"
 #include "layerExBase.hpp"
 #include "ncbind/ncbind.hpp"
 #include "Application.h"
 #include "LayerBitmapIntf.h"
-#include <algorithm>
-#include "krmovie.h"
-#include "movie/ffmpeg/KRMovieLayer.h"
+#include "StorageImpl.h"         // TVPCreateIStream
+#include "combase.h"             // IStream
+#include "krmovie.h"             // iTVPVideoOverlay
+#include "movie/FFmpegVideoOverlay.h" // GetVideoLayerObject
+#include "RenderManager.h"
+#include "DebugIntf.h"
 
 #define NCB_MODULE_NAME TJS_W("layerExMovie.dll")
 
 /*
-* Movie 描画用レイヤ
-*/
+ * Movie drawing layer.
+ */
 struct layerExMovie : public layerExBase_GL, tTVPContinuousEventCallbackIntf
 {
 protected:
-	class VideoLayer : public KRMovie::VideoPresentLayer {
-		std::function<void(KRMovieEvent, void *)> m_funcCallback;
-
-	public:
-		VideoLayer(const std::function<void(KRMovieEvent, void *)> &func) : m_funcCallback(func) {}
-		void BuildGraph(IStream *stream, const tjs_char * streamname, const tjs_char *type, uint64_t size)
-		{
-			m_pPlayer->SetCallback(m_funcCallback);
-			m_pPlayer->OpenFromStream(stream, streamname, type, size);
-		}
-		virtual void OnPlayEvent(KRMovieEvent msg, void *p) override {
-			m_funcCallback(msg, p);
-		}
-	};
-	VideoLayer *VideoOverlay;
-	//MessageDelegate *UtilWindow;
-	//ObjectT _pType;
+	iTVPVideoOverlay *VideoOverlay;
 
 	long movieWidth;
 	long movieHeight;
-	class tTVPBaseTexture	*Bitmap[2];
+	class tTVPBaseTexture *Bitmap[2];
 
 	bool loop;
 	bool alpha;
-
-	tTJSBinaryStream *in;
-#ifdef FILEBASE
-	ttstr tempFile;
-#else
-// 	CIStreamProxy			*m_Proxy;
-// 	CIStreamReader			*m_Reader;
-#endif
 
 	void clearMovie();
 
@@ -62,17 +66,18 @@ protected:
 	DispatchT onStopMovie;
 
 	bool playing;
-	std::mutex mtxEvent;
-	std::vector<KRMovieEvent> PostEvents;
+	// The presented frame number the layer image currently holds (-1: none), and
+	// the last status seen, so a change can be reported once.
+	int lastFrame;
+	tTVPVideoStatus lastStatus;
 
 public:
 	layerExMovie(DispatchT obj);
 	~layerExMovie();
 
 public:
-
-	// ムービーのロード
-	void openMovie(const tjs_char* filename, bool alpha);
+	// Prepare a movie file for playback.
+	void openMovie(const tjs_char *filename, bool alpha);
 
 	void startMovie(bool loop);
 	void stopMovie();
@@ -85,25 +90,23 @@ public:
 	void onUpdate();
 	void onEnded();
 
-	/**
-	* Continuous コールバック
-	* 吉里吉里が暇なときに常に呼ばれる
-	* 塗り直し処理
-	*/
+	/*
+	 * Continuous callback: called whenever the engine is idle.  It refreshes the
+	 * layer image and reports the end of the movie.
+	 */
 	virtual void TJS_INTF_METHOD OnContinuousCallback(tjs_uint64 tick);
 };
 
 /**
- * コンストラクタ
+ * Constructor
  */
-layerExMovie::layerExMovie(DispatchT obj) : /*_pType(obj, TJS_W("type")),*/ layerExBase_GL(obj)
+layerExMovie::layerExMovie(DispatchT obj) : layerExBase_GL(obj)
 {
 	VideoOverlay = NULL;
 	loop = false;
 	alpha = false;
 	movieWidth = 0;
 	movieHeight = 0;
-	in = nullptr;
 	{
 		tTJSVariant var;
 		if (TJS_SUCCEEDED(obj->PropGet(TJS_IGNOREPROP, TJS_W("onStartMovie"), NULL, &var, obj))) onStartMovie = var;
@@ -114,17 +117,20 @@ layerExMovie::layerExMovie(DispatchT obj) : /*_pType(obj, TJS_W("type")),*/ laye
 		else onUpdateMovie = NULL;
 	}
 	playing = false;
-	//UtilWindow = new MessageDelegate(EVENT_FUNC2(layerExMovie, WndProc));
+	lastFrame = -1;
+	lastStatus = vsStopped;
 	Bitmap[0] = Bitmap[1] = nullptr;
 }
 
 /**
- * デストラクタ
+ * Destructor
  */
 layerExMovie::~layerExMovie()
 {
 	stopMovie();
-	//if (UtilWindow) delete UtilWindow;
+	// clearMovie() has released the player by now, and the player only owns the
+	// textures it allocated itself (SetVideoBuffer takes over ours), so these are
+	// ours to delete.
 	if (Bitmap[0]) delete Bitmap[0];
 	if (Bitmap[1]) delete Bitmap[1];
 }
@@ -132,68 +138,95 @@ layerExMovie::~layerExMovie()
 void
 layerExMovie::clearMovie()
 {
+	// The player holds a reference to the IStream built in openMovie(), and that
+	// adapter owns the tTJSBinaryStream it was created from
+	// (tTVPIStreamAdapter::~tTVPIStreamAdapter deletes it), so neither object is
+	// deleted here: releasing the player releases the stream with it.  Deleting
+	// the stream here as well was a double free that crashed in stopMovie().
 	if (VideoOverlay) {
 		VideoOverlay->Release(), VideoOverlay = NULL;
 	}
-// 	if (in) {
-// 		delete in;
-// 	}
+	lastFrame = -1;
+	lastStatus = vsStopped;
 }
 
 /**
- * ムービーファイルを開いて準備する
- * @param filename ファイル名
- * @param alpha アルファ指定（半分のサイズでα処理する）
+ * Open a movie file and prepare it for playback.
+ * @param filename file name
+ * @param alpha alpha flag (the frame is processed at half height, see above)
  */
 void
-layerExMovie::openMovie(const tjs_char* filename, bool alpha)
-{ 
+layerExMovie::openMovie(const tjs_char *filename, bool alpha)
+{
 	clearMovie();
 	this->alpha = alpha;
 	movieWidth = 0;
 	movieHeight = 0;
 
-	// ファイルをテンポラリにコピーして対応
-	if ((in = TVPCreateStream(filename, TJS_BS_READ)) == NULL) {
+	// The stream is wrapped into an IStream and ownership moves to that adapter
+	// (TVPCreateIStream(stream) hands it to tTVPIStreamAdapter, whose destructor
+	// deletes it), so it must not be deleted here - not even on the error paths
+	// below once the adapter exists.
+	tTJSBinaryStream *in = TVPCreateStream(filename, TJS_BS_READ);
+	if (in == NULL) {
 		ttstr error = filename;
-		error += TJS_W(":ファイルが開けません");
+		error += TJS_W(": file cannot be opened");
 		TVPAddLog(error);
 		return;
 	}
+	const uint64_t size = in->GetSize();
+
 	ttstr ext = TVPExtractStorageExt(filename);
 	ext.ToLowerCase();
-	VideoLayer *pOverlay = new VideoLayer([this](KRMovieEvent msg, void* p) {
-		std::lock_guard<std::mutex> lk(mtxEvent);
-		PostEvents.push_back(msg);
-	});
-	pOverlay->BuildGraph(TVPCreateIStream(in), filename, ext.c_str(), in->GetSize());
-	VideoOverlay = pOverlay;
-	VideoOverlay->GetVideoSize(&movieWidth, &movieHeight);
+
+	// The factory keeps its own reference on the stream (see the note on the
+	// IStream ownership in FFmpegVideoOverlay.cpp), so drop ours immediately.
+	IStream *stream = TVPCreateIStream(in);
+	if(!stream) {
+		// no adapter was created, so the stream is still ours to delete
+		delete in;
+		TVPAddLog(ttstr(filename) + TJS_W(": cannot wrap the stream"));
+		clearMovie();
+		return;
+	}
+	iTVPVideoOverlay *player = nullptr;
+	GetVideoLayerObject(nullptr, stream, filename, ext.c_str(), size, &player);
+	stream->Release();
+	if (!player) {
+		TVPAddLog(ttstr(filename) + TJS_W(": the movie player could not open it"));
+		clearMovie();
+		return;
+	}
+	VideoOverlay = player;
+
+	long w = 0, h = 0;
+	VideoOverlay->GetVideoSize(&w, &h);
+	movieWidth = w;
+	movieHeight = h;
+
 	if (Bitmap[0]) delete Bitmap[0];
 	if (Bitmap[1]) delete Bitmap[1];
-	long size = movieWidth * movieHeight * 4;
-	Bitmap[0] = new tTVPBaseTexture(movieWidth, movieHeight/*, 32*/);
-	Bitmap[1] = new tTVPBaseTexture(movieWidth, movieHeight/*, 32*/);
-	VideoOverlay->SetVideoBuffer(Bitmap[0], Bitmap[1], size);
+	Bitmap[0] = new tTVPBaseTexture((tjs_int)w, (tjs_int)h);
+	Bitmap[1] = new tTVPBaseTexture((tjs_int)w, (tjs_int)h);
+	VideoOverlay->SetVideoBuffer(Bitmap[0], Bitmap[1], (long)(w * h * 4));
+
 	if (alpha) {
 		movieWidth /= 2;
 	}
-// 	_pWidth.SetValue(movieWidth);
-// 	_pHeight.SetValue(movieHeight);
-    _this->SetSize(movieWidth, movieHeight);
-	//_pType.SetValue(alpha ? ltAlpha : ltOpaque);
-    _this->SetType(alpha ? ltAlpha : ltOpaque);
+	_this->SetSize((tjs_int)movieWidth, (tjs_int)movieHeight);
+	_this->SetType(alpha ? ltAlpha : ltOpaque);
 }
 
 /**
- * ムービーの開始
+ * Start the movie.
  */
 void
 layerExMovie::startMovie(bool loop)
 {
 	if (VideoOverlay) {
-		// 再生開始
 		this->loop = loop;
+		lastFrame = -1;
+		lastStatus = vsStopped;
 		VideoOverlay->Play();
 		start();
 		if (onStartMovie != NULL) {
@@ -203,7 +236,7 @@ layerExMovie::startMovie(bool loop)
 }
 
 /**
- * ムービーの停止
+ * Stop the movie.
  */
 void
 layerExMovie::stopMovie()
@@ -234,7 +267,7 @@ layerExMovie::start()
 }
 
 /**
- * Irrlicht 呼び出し処理停止
+ * Stop the continuous callback hook.
  */
 void
 layerExMovie::stop()
@@ -243,14 +276,15 @@ layerExMovie::stop()
 	playing = false;
 }
 
-void layerExMovie::onUpdate() {
-	// 更新完了
-	// サーフェースからレイヤに画面コピー
+void
+layerExMovie::onUpdate()
+{
+	// Copy the current picture from the player into the layer image.
 	reset();
 	tTVPBaseTexture *frontbmp = VideoOverlay->GetFrontBuffer();
 	if (frontbmp) {
-		iTVPTexture2D* src = frontbmp->GetTexture();
-		iTVPTexture2D* dst = _this->GetMainImage()->GetTextureForRender(false, nullptr);
+		iTVPTexture2D *src = frontbmp->GetTexture();
+		iTVPTexture2D *dst = _this->GetMainImage()->GetTextureForRender(false, nullptr);
 		tTVPRect rcdst(_clipLeft, _clipTop, _clipLeft + _clipWidth, _clipTop + _clipHeight);
 		iTVPRenderMethod *method;
 		if (alpha) {
@@ -266,17 +300,19 @@ void layerExMovie::onUpdate() {
 		};
 		TVPGetRenderManager()->OperateRect(method, dst, nullptr, rcdst, src_tex);
 	}
-	//redraw();
 	if (onUpdateMovie != NULL) {
 		onUpdateMovie->FuncCall(0, NULL, NULL, NULL, 0, NULL, _obj);
 	}
 }
 
-void layerExMovie::onEnded() {
-	// 更新終了
+void
+layerExMovie::onEnded()
+{
 	if (loop) {
 		VideoOverlay->Rewind();
 		VideoOverlay->Play();
+		lastFrame = -1;
+		lastStatus = vsStopped;
 	} else {
 		Application->PostUserMessage(std::bind(&layerExMovie::stopMovie, this));
 	}
@@ -286,49 +322,44 @@ void TJS_INTF_METHOD
 layerExMovie::OnContinuousCallback(tjs_uint64 tick)
 {
 	if (VideoOverlay) {
-		// 更新
-		VideoOverlay->OnContinuousCallback(tick);
-		std::vector<KRMovieEvent> vecEvent;
-		{
-			std::lock_guard<std::mutex> lk(mtxEvent);
-			vecEvent.swap(PostEvents);
+		int frame = -1;
+		VideoOverlay->GetFrame(&frame);
+		if (frame != lastFrame) {
+			lastFrame = frame;
+			onUpdate();
 		}
-		for (KRMovieEvent msg : vecEvent) {
-			switch (msg) {
-			case KRMovieEvent::Update:
-				onUpdate(); break;
-			case KRMovieEvent::Ended:
-				onEnded(); break;
-			default:
-				break;
-			}
+		tTVPVideoStatus status = vsStopped;
+		VideoOverlay->GetStatus(&status);
+		if (status == vsEnded && lastStatus != vsEnded) {
+			onEnded();
 		}
+		lastStatus = status;
 	} else {
 		stop();
 	}
 }
 
-// ----------------------------------- クラスの登録
+// ----------------------------------- class registration
 
 NCB_GET_INSTANCE_HOOK(layerExMovie)
 {
-	// インスタンスゲッタ
-	NCB_INSTANCE_GETTER(objthis) { // objthis を iTJSDispatch2* 型の引数とする
-		ClassT* obj = GetNativeInstance(objthis);	// ネイティブインスタンスポインタ取得
+	// instance getter
+	NCB_INSTANCE_GETTER(objthis) { // objthis as an iTJSDispatch2* argument
+		ClassT* obj = GetNativeInstance(objthis);	// get the native instance pointer
 		if (!obj) {
-			obj = new ClassT(objthis);				// ない場合は生成する
-			SetNativeInstance(objthis, obj);		// objthis に obj をネイティブインスタンスとして登録する
+			obj = new ClassT(objthis);				// create it if it does not exist
+			SetNativeInstance(objthis, obj);		// register it as objthis' native instance
 		}
 		return obj;
 	}
 
-	// デストラクタ（実際のメソッドが呼ばれた後に呼ばれる）
+	// destructor (called after the last method call)
 	~NCB_GET_INSTANCE_HOOK_CLASS() {
 	}
 };
 
 
-// フックつきアタッチ
+// attach with hook
 NCB_ATTACH_CLASS_WITH_HOOK(layerExMovie, Layer) {
 	NCB_METHOD(openMovie);
 	NCB_METHOD(startMovie);

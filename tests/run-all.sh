@@ -89,17 +89,21 @@ run "xp3-plain"         60 - "smoke: done"            -- "$binary" "$work/plain.
 run "xp3-encrypted"     60 - "smoke: done"            -- "$binary" tests/encrypted-game/game.xp3
 grep -q "tone.mp3 status=play" "$work/xp3-encrypted.log" || echo "note: audio did not play from the encrypted archive"
 run "7z"                60 - "smoke: done"            -- "$binary" tests/7z-game/game.7z
+run "layer-ex-movie"    60 - "layerExMovie: done"     -- "$binary" tests/layer-ex-movie
 run "file-selector-open"  40 - "call 1 returned 1"    -- env KRKR2_DIALOG_KEYS=down,enter "$binary" tests/file-selector/open
 run "file-selector-cancel" 40 - "call 1 returned 0"   -- env KRKR2_DIALOG_KEYS=esc,esc "$binary" tests/file-selector/open
 
-# conformance: assert the summary line and a pass floor (2 known upstream FAILs)
+# conformance: assert the summary line; there are no known-failing checks, so the
+# floor is the full count and any failure is a regression
 run "api-conformance"   120 - "SUMMARY pass="          -- "$binary" tests/api-conformance
 if [ -f "$work/api-conformance.log" ]; then
-	got=$(grep -oE "SUMMARY pass=[0-9]+ fail=[0-9]+" "$work/api-conformance.log" | head -1 | grep -oE "[0-9]+" | head -1)
-	if [ -n "${got:-}" ] && [ "$got" -ge 57 ]; then
-		pass=$((pass + 1)); results+=("PASS  api-conformance pass-count ($got >= 57)")
+	got=$(grep -oE "SUMMARY pass=[0-9]+ fail=[0-9]+" "$work/api-conformance.log" | head -1)
+	passes=$(echo "$got" | grep -oE "pass=[0-9]+" | cut -d= -f2)
+	fails=$(echo "$got" | grep -oE "fail=[0-9]+" | cut -d= -f2)
+	if [ -n "${passes:-}" ] && [ "$passes" -ge 61 ] && [ "${fails:-1}" = 0 ]; then
+		pass=$((pass + 1)); results+=("PASS  api-conformance pass-count ($passes passed, 0 failed)")
 	else
-		fail=$((fail + 1)); results+=("FAIL  api-conformance pass-count (got ${got:-none})")
+		fail=$((fail + 1)); results+=("FAIL  api-conformance pass-count (${got:-no summary})")
 	fi
 fi
 

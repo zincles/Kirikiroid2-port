@@ -1,0 +1,136 @@
+// Behaviour game: the layerExMovie extension (layerExMovie.dll).
+//
+// The extension plays a movie inside a Layer: openMovie(file, alpha),
+// startMovie(loop), stopMovie(), isPlayingMovie() and the onStartMovie /
+// onUpdateMovie / onStopMovie callbacks.  Upstream builds it on the Kodi-derived
+// movie tree; on this port it drives the player the engine's own VideoOverlay
+// uses (movie/FFmpegVideoOverlay.cpp through iTVPVideoOverlay), so this game
+// checks that the port really produces a picture: the layer must receive the
+// movie's pixels, the presented frame must advance, the callbacks must fire, and
+// a looping movie must stay playing past its own length.
+//
+// Fixture: movie.mp4 (320x240, 60 frames, 2s) - a still yellow patch around
+// (160,120) and an animated patch at (10,200), so "the picture is there" and
+// "the picture moves" are two independent assertions.
+
+// Plugins have to be linked before the objects that use them are created: the
+// NCB hook (NCB_ATTACH_CLASS_WITH_HOOK, the same mechanism layerExPerspective.dll
+// uses) adds the members to the Layer class object, and a Layer that already
+// exists does not see them.  Plugins linked from the top of a game's startup
+// script - the usual pattern - are unaffected.
+Plugins.link("layerExMovie.dll");
+var linked = "";
+{
+	var list = Plugins.getList();
+	for (var i = 0; i < list.count; ++i) linked += list[i] + ",";
+}
+
+var win = new Window();
+win.setInnerSize(640, 480);
+var layer = new Layer(win, null);
+
+var startCount = 0, updateCount = 0, stopCount = 0;
+var problems = [];
+function bad(msg) { problems.push(msg); Debug.message("layerExMovie: PROBLEM " + msg); }
+
+if (linked.indexOf("layerexmovie.dll") < 0) bad("layerExMovie.dll is not registered: " + linked);
+if (layer.openMovie == void) bad("Layer has no openMovie member after linking layerExMovie.dll");
+
+layer.onStartMovie = function() { startCount++; };
+layer.onUpdateMovie = function() { updateCount++; };
+layer.onStopMovie  = function() { stopCount++; };
+
+layer.openMovie("movie.mp4", false);
+Debug.message("layerExMovie: after openMovie size=" + layer.width + "x" + layer.height);
+if (layer.width != 320 || layer.height != 240)
+	bad("openMovie did not size the layer to the movie: " + layer.width + "x" + layer.height);
+
+// Pixel helpers: getMainPixel() returns 0xRRGGBB.
+function rgbOf(c) { return ((c >> 16) & 255) + "," + ((c >> 8) & 255) + "," + (c & 255); }
+function isYellow(c) { return ((c >> 16) & 255) > 200 && ((c >> 8) & 255) > 200 && (c & 255) < 60; }
+
+var stage = 0;
+var startedAt = 0;
+var stillSample = 0;
+var anim1 = 0, anim2 = 0;
+var updatesAtLoopStart = 0;
+
+layer.startMovie(false);
+if (startCount != 1) bad("onStartMovie did not fire on startMovie (count=" + startCount + ")");
+if (!layer.isPlayingMovie()) bad("isPlayingMovie() is false right after startMovie");
+
+System.addContinuousHandler(function(tick) {
+	var now = System.getTickCount();
+	if (stage == 0) { stage = 1; startedAt = now; return; }
+
+	if (stage == 1 && now - startedAt >= 800) {
+		// the movie has been running for most of a second: the still patch must
+		// be there and frames must have been copied
+		stillSample = layer.getMainPixel(160, 120);
+		anim1 = layer.getMainPixel(10, 200);
+		Debug.message("layerExMovie: still=" + rgbOf(stillSample) + " animated=" + rgbOf(anim1)
+			+ " updates=" + updateCount + " playing=" + layer.isPlayingMovie());
+		if (!isYellow(stillSample))
+			bad("the still patch is not the movie's yellow: " + rgbOf(stillSample));
+		if (updateCount < 1) bad("onUpdateMovie never fired while playing");
+		if (anim1 == 0) bad("the animated patch is blank: " + rgbOf(anim1));
+		stage = 2; startedAt = now; return;
+	}
+
+	if (stage == 2 && now - startedAt >= 500) {
+		// half a second later the animated patch must have moved on: that is the
+		// presented frame advancing, not a one-off copy
+		anim2 = layer.getMainPixel(10, 200);
+		Debug.message("layerExMovie: animated later=" + rgbOf(anim2) + " updates=" + updateCount);
+		if (anim2 == anim1) bad("the picture did not change over 500ms: " + rgbOf(anim2));
+		if (anim2 == 0) bad("the animated patch went blank: " + rgbOf(anim2));
+		stage = 3; startedAt = now; return;
+	}
+
+	if (stage == 3) {
+		// Wait for the end of the 2s movie: the player reports it once its clock
+		// has run out (and its audio has drained), which is a little after the
+		// nominal length, so poll instead of assuming a time.
+		if (layer.isPlayingMovie() && now - startedAt < 8000) return;
+		Debug.message("layerExMovie: after end playing=" + layer.isPlayingMovie()
+			+ " stopCount=" + stopCount + " updates=" + updateCount + " afterMs=" + (now - startedAt));
+		if (layer.isPlayingMovie()) bad("still playing 8s past the start of a 2s movie");
+		if (stopCount != 1) bad("onStopMovie did not fire at the end (count=" + stopCount + ")");
+		// The fixture has 60 frames; a few may be dropped as late under load.
+		if (updateCount < 55) bad("only " + updateCount + " frames were presented of 60");
+		// The end ran the extension's own stop (onStopMovie above), which released
+		// the movie: playing it again means opening it again, as a game does from
+		// onStopMovie.  Then loop it, so it must outlive its own length.
+		updatesAtLoopStart = updateCount;
+		layer.openMovie("movie.mp4", false);
+		if (layer.width != 320 || layer.height != 240)
+			bad("re-opened movie did not size the layer: " + layer.width + "x" + layer.height);
+		layer.startMovie(true);
+		if (startCount != 2) bad("onStartMovie did not fire for the re-opened movie (count=" + startCount + ")");
+		stage = 4; startedAt = now; return;
+	}
+
+	if (stage == 4 && now - startedAt >= 2600) {
+		Debug.message("layerExMovie: looping playing=" + layer.isPlayingMovie()
+			+ " updates=" + updateCount);
+		if (!layer.isPlayingMovie())
+			bad("a looping movie stopped after its first pass (loop=true)");
+		if (updateCount <= updatesAtLoopStart) bad("a looping movie stopped presenting frames");
+		if (stopCount != 1) bad("onStopMovie fired while looping (count=" + stopCount + ")");
+		layer.stopMovie();
+		stage = 5; startedAt = now; return;
+	}
+
+	if (stage == 5 && now - startedAt >= 200) {
+		if (stopCount != 2) bad("onStopMovie did not fire for stopMovie (count=" + stopCount + ")");
+		if (layer.isPlayingMovie()) bad("isPlayingMovie() still true after stopMovie");
+		Debug.message("layerExMovie: updates=" + updateCount + " starts=" + startCount
+			+ " stops=" + stopCount + " problems=" + problems.length);
+		if (problems.length) {
+			Debug.message("layerExMovie: FAILED - " + problems.join(" | "));
+			System.exit(1);
+		}
+		Debug.message("layerExMovie: done");
+		System.exit(0);
+	}
+});
