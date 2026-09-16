@@ -798,6 +798,12 @@ std::string StripTrailingSlash(const std::string &path)
 // write to (TVPCheckStartupPath() has already verified that).
 //
 // The chosen path is logged once, and has no trailing slash.
+//
+// Defined outside the anonymous namespace below: the launcher (Host.cpp) writes
+// its "last game" there before the engine is started, so it reaches this through
+// the declaration in Host.h.
+} // anonymous namespace
+
 const std::string &WritablePath()
 {
 	static std::string cached;
@@ -833,6 +839,8 @@ const std::string &WritablePath()
 	TVPPrintLog(("writable data directory: " + cached).c_str());
 	return cached;
 }
+
+namespace {
 
 // Undoes /proc/mounts' octal escapes (\040 for a space) in a field.
 std::string UnescapeMountField(const std::string &in)

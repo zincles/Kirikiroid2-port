@@ -59,8 +59,33 @@ tjs_uint HostMouseButtonToVK(tTVPMouseButton btn);
 // Name -> SDL controller button for the scripted-input helpers ("a", "b", "x",
 // "y", "up", "down", "left", "right", "start", "back", "lb", "rb"); 0xFF when
 // the name is unknown.  Shared by KRKR2_DIALOG_KEYS (SDLDialog.cpp) and
-// KRKR2_TEST_INPUT below so both scripts spell game-pad buttons the same way.
+// KRKR2_TEST_INPUT above so both scripts spell game-pad buttons the same way.
 Uint8 HostGamePadButtonByName(const std::string &name);
+
+// ---------------------------------------------------------------------------
+// Launcher
+//
+// The Android build had a cocos2d menu (MainFileSelectorForm) that listed the
+// storage and started the chosen game; this port has no menu, so a game is
+// normally named on the command line or found next to the executable.  When
+// neither applies - and on a handheld, where there is no command line at all -
+// HostBrowseForGame() shows the same file selector the engine's
+// Storages.selectFile() reaches, titled for picking a game:
+//
+//   * `*.xp3;*.7z` filters the listing, so archives are one keypress away;
+//   * F2 (pad X) takes the folder the cursor is in, which is how a game that is
+//     a directory (one holding startup.tjs) is chosen;
+//   * the roots list (F1 / pad BACK) covers the mounted volumes, so on the
+//     Switch it reaches sdmc:.
+//
+// It needs only the SDL window and renderer (the dialog rasterizes with
+// FreeType, not the engine's font machinery), so it runs before the engine is
+// started, and the game it returns is then started normally - no relaunch.
+std::string HostBrowseForGame(const std::string &initial_directory);
+// The game the launcher started last time, remembered next to the engine's data
+// so the next launcher run opens where the user left off.  Empty when unknown.
+std::string HostReadLastGame();
+void HostWriteLastGame(const std::string &path);
 
 // ---------------------------------------------------------------------------
 // Scripted input (KRKR2_TEST_INPUT)
@@ -110,3 +135,19 @@ void HostPresentLastFrame();
 void HostRecycleTextures();
 
 } // namespace krkr2sdl
+
+// ---------------------------------------------------------------------------
+// Platform-layer entries the launcher uses directly
+//
+// Both are defined by the port's platform layer at global scope, next to the
+// engine's own platform contract (the engine's base/win32/FileSelector.cpp
+// declares TVPShowFileSelector with the same signature for its own use).
+// ---------------------------------------------------------------------------
+// The engine's writable directory (saves, preferences): $KRKR2_DATA_DIR when
+// set, otherwise SDL_GetPrefPath().  Platform.cpp computes it for the engine's
+// preference/save paths; the launcher remembers the last game there, which has
+// to work before the engine is started.
+const std::string &WritablePath();
+// The modal file selector (environ/sdl/FileSelector.cpp).
+std::string TVPShowFileSelector(const std::string &title, const std::string &filename,
+	std::string initdir, bool issave);

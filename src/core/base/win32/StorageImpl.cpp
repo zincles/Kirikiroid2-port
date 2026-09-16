@@ -529,7 +529,18 @@ ttstr TVPGetAppPath()
 	static ttstr exepath(TVPExtractStoragePath(TVPNormalizeStorageName(ExePath())));
 	return exepath;
 #endif
-	static ttstr apppath(TVPExtractStoragePath(TVPProjectDir));
+	// TVPProjectDir is only known once the game's storage has been mounted, and
+	// this port can show a dialog before that (the launcher browses the file
+	// system before the engine is started).  Caching the answer in that window
+	// froze an empty path in here for the rest of the run, which the engine's own
+	// data path is then built from - TVPGetLocalName() on the result threw
+	// "Not supported media type" and the game never started.
+	static ttstr apppath;
+	if(apppath.IsEmpty())
+	{
+		ttstr path(TVPExtractStoragePath(TVPProjectDir));
+		if(!path.IsEmpty()) apppath = path;
+	}
 	return apppath;
 }
 //---------------------------------------------------------------------------

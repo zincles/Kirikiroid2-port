@@ -53,6 +53,18 @@ Run a game (a directory holding `startup.tjs`, an `.xp3`, or a `.7z`):
 
     ./build/krkr2 /path/to/game
 
+With no game argument, `krkr2` starts one found next to the executable (also in a
+`games/` sub-directory, preferring `data.xp3`); when there is none it opens a
+**game browser** - the same dialog the engine's `Storages.selectFile()` reaches:
+directories are listed first, the `*.xp3;*.7z` filter covers archives, `ENTER`
+enters a directory or picks an archive, `F2` (game pad `X`) takes the folder the
+cursor is in - which is how a game that is a directory is chosen - and `ESC`
+cancels.  The keyboard, the mouse and a game pad all drive it, and the roots list
+(`F1`, game pad `BACK`) reaches the mounted volumes, so on a handheld with no
+command line the whole flow is game pad only.  The game started last is remembered
+and the next browsing run opens there.  `--browse` asks even when a game was given
+(it opens at that game) or found.
+
 An encrypted `.xp3` needs its patch files (`patch.tjs`, `patch.xp3` or
 `xp3filter.tjs`) beside it, and `krkr2` exits with status 3 and says so if the
 archive cannot be decrypted.  A directory without `startup.tjs` is reported the

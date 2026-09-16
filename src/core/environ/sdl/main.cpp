@@ -38,6 +38,7 @@
 
 #include <cerrno>
 #include <unistd.h>
+#include <sys/stat.h> // stat/S_ISDIR for the launcher's directory checks
 #include <climits>
 #include <cstdlib>
 
@@ -65,6 +66,9 @@ struct Options {
 	bool fullscreen = false;
 	bool vsync = true;
 	bool has_game_path = false;
+	// Show the game browser even when a game was given or found beside the
+	// executable (it opens at that game's directory).
+	bool browse = false;
 };
 
 void PrintUsage(const char *argv0)
@@ -79,7 +83,11 @@ void PrintUsage(const char *argv0)
 		"  --height=<px>      window height (default 720)\n"
 		"  --fullscreen       start in full screen\n"
 		"  --no-vsync         disable vertical sync\n"
+		"  --browse           pick the game in the browser (works on a handheld)\n"
 		"  --help             this text\n"
+		"\n"
+		"without a game argument the game next to the executable is started; when\n"
+		"there is none, a browser opens (see --browse for the same on purpose).\n"
 		"\n"
 		"anything else (e.g. -timerprec=0.5) is passed to the engine as a\n"
 		"command line option, as TVPCheckStartupArg() does on Windows.\n",
@@ -96,6 +104,7 @@ bool ParseOptions(int argc, char **argv, Options &opt)
 		}
 		if (arg == "--fullscreen") { opt.fullscreen = true; continue; }
 		if (arg == "--no-vsync") { opt.vsync = false; continue; }
+		if (arg == "--browse") { opt.browse = true; continue; }
 
 		auto value_of = [&arg](const char *name) -> const char * {
 			size_t len = strlen(name);
@@ -137,6 +146,24 @@ bool IsBootableGameDir(const std::string &path)
 		if (lower == "startup.tjs") bootable = true;
 	});
 	return bootable;
+}
+
+// Whether a path exists and is a directory, and the directory holding a file
+// (used by the launcher to open the browser where a game was picked last).
+bool IsDirectoryPath(const std::string &path)
+{
+	struct stat st;
+	return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+std::string DirectoryOf(const std::string &path)
+{
+	const size_t slash = path.find_last_of('/');
+	if (slash == std::string::npos) return std::string(".");
+	if (slash == 0) return std::string("/");
+	// a trailing slash means the path itself is the directory
+	const std::string trimmed = path.substr(0, slash);
+	return trimmed.empty() ? std::string("/") : trimmed;
 }
 
 // Directory holding the running executable. On the Switch this is how a game
@@ -290,15 +317,13 @@ int main(int argc, char **argv)
 
 	std::string game_path = opt.game_path;
 	if (game_path.empty() && !FindDefaultGame(game_path, ExecutableDirectory(argv[0]))) {
-		fprintf(stderr,
-			"krkr2: no game specified and none found next to the executable.\n"
-			"       pass a .xp3 archive or a directory containing startup.tjs.\n");
-		PrintUsage(argv[0]);
-		return 2;
+		// Nothing to start: the browser below asks (a handheld has no command
+		// line, so this is the only way to start a game there).
+		game_path.clear();
 	}
 
 	std::string abs_game_path;
-	if (!MakeAbsolutePath(game_path, abs_game_path)) {
+	if (!game_path.empty() && !MakeAbsolutePath(game_path, abs_game_path)) {
 		fprintf(stderr, "krkr2: cannot resolve '%s': %s\n", game_path.c_str(), strerror(errno));
 		return 2;
 	}
@@ -306,7 +331,9 @@ int main(int argc, char **argv)
 	if (!opt.data_dir.empty()) {
 		// The engine resolves its preference/save directories through
 		// TVPGetInternalPreferencePath()/TVPGetDataPath(); the platform layer
-		// honours KRKR2_DATA_DIR so this option needs no extra plumbing.
+		// honours KRKR2_DATA_DIR so this option needs no extra plumbing.  The
+		// launcher below reads the same variable for its own state, so it is set
+		// before anything else uses it.
 		setenv("KRKR2_DATA_DIR", opt.data_dir.c_str(), 1);
 	}
 
@@ -325,6 +352,40 @@ int main(int argc, char **argv)
 	// reporting "play" (observed intermittently by the API conformance run, and
 	// the reason the movie player calls this itself before creating its stream).
 	TVPInitDirectSound();
+
+	// Nothing to start (or --browse): ask.  This is the same dialog the engine's
+	// Storages.selectFile() reaches - titled for picking a game, filtered to
+	// archives, with F2 (pad X) taking the folder the cursor is in for a game
+	// that is a directory, and a roots list that reaches the mounted volumes on
+	// a handheld.  It runs before the engine is started (the dialog rasterizes
+	// its own text) and the game it returns is started like any other one, so
+	// picking a game costs nothing extra.
+	if (abs_game_path.empty() || opt.browse) {
+		std::string start_dir;
+		if (!abs_game_path.empty()) {
+			// --browse with a game: open where that game is
+			start_dir = IsDirectoryPath(abs_game_path)
+				? abs_game_path : DirectoryOf(abs_game_path);
+		} else {
+			// where the user left off, else beside the executable (on a handheld
+			// that is where games are kept)
+			const std::string last = krkr2sdl::HostReadLastGame();
+			start_dir = last.empty() ? ExecutableDirectory(argv[0])
+				: (IsDirectoryPath(last) ? last : DirectoryOf(last));
+		}
+		TVPAddLog(ttstr(TJS_W("launcher: browsing in ")) + ttstr(start_dir.c_str()));
+		const std::string chosen = krkr2sdl::HostBrowseForGame(start_dir);
+		if (chosen.empty()) {
+			fprintf(stderr, "krkr2: no game selected.\n");
+			return 0;
+		}
+		if (!MakeAbsolutePath(chosen, abs_game_path)) {
+			fprintf(stderr, "krkr2: cannot resolve '%s': %s\n",
+				chosen.c_str(), strerror(errno));
+			return 2;
+		}
+		TVPAddLog(ttstr(TJS_W("launcher: selected ")) + ttstr(abs_game_path.c_str()));
+	}
 
 	// Start the engine.  Failures here are almost always "the game could not be
 	// opened": a wrong path, an encrypted archive without its patch, or a
@@ -347,21 +408,14 @@ int main(int argc, char **argv)
 		return 3;
 	}
 
-	// The engine terminates by itself when the game produced no window at all
-	// (TVPTerminateOnNoWindowStartup).  That is what happens whenever the
-	// startup script could not be read - a directory without startup.tjs, a
-	// wrong path, or an encrypted archive whose patch is missing - and in that
-	// path the engine's own diagnostic is a bare message tid, so add the
-	// actionable hint here.
-	if (TVPGetWindowCount() == 0) {
-		fprintf(stderr,
-			"krkr2: '%s' did not start a game window (no startup script ran).\n"
-			"       check that the path holds startup.tjs (or is an .xp3 that does),\n"
-			"       and for an encrypted archive that its patch is next to it\n"
-			"       (patch.tjs / patch.xp3 / xp3filter.tjs from the patch library).\n",
-			abs_game_path.c_str());
-	}
+	// The game started: remember it, so the next launcher run opens there (a
+	// game that failed above is not remembered).
+	krkr2sdl::HostWriteLastGame(abs_game_path);
 
+	// A game that produced no window is not reported here: the engine ends such a
+	// game by itself (TVPTerminateOnNoWindowStartup), which is what a scripted
+	// test does, and TVPExitApplication() reports a start-up that really failed
+	// (it is the one place that knows whether the start-up script ran).
 	int fps_limit = IndividualConfigManager::GetInstance()->GetValue<int>("fps_limit", 60);
 	return RunFrameLoop(fps_limit);
 }

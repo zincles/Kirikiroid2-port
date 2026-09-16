@@ -97,6 +97,8 @@ run "touch-input"       60 - "touch-input: done"      -- env \
 	"$binary" tests/touch-input
 run "file-selector-open"  40 - "call 1 returned 1"    -- env KRKR2_DIALOG_KEYS=down,enter "$binary" tests/file-selector/open
 run "file-selector-cancel" 40 - "call 1 returned 0"   -- env KRKR2_DIALOG_KEYS=esc,esc "$binary" tests/file-selector/open
+# The game browser (launcher): with no game it asks, then starts what was picked.
+run "launcher"         120 - "launcher test: 4 passed, 0 failed" -- bash tests/run-launcher-test.sh --build "$(dirname "$binary")"
 
 # conformance: assert the summary line; there are no known-failing checks, so the
 # floor is the full count and any failure is a regression

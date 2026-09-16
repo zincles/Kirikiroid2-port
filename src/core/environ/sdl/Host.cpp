@@ -410,6 +410,54 @@ Uint8 HostGamePadButtonByName(const std::string &name)
 	return 0xFF;
 }
 
+//---------------------------------------------------------------------------
+// Launcher
+//---------------------------------------------------------------------------
+std::string HostBrowseForGame(const std::string &initial_directory)
+{
+	// The dialog's filter is also its "type to jump" line, so a path in front of
+	// it would be wrong here; the starting directory is passed separately.
+	return TVPShowFileSelector("Select a game", "*.xp3;*.7z", initial_directory, false);
+}
+
+static std::string LastGameFile()
+{
+	const std::string &dir = WritablePath();
+	if (dir.empty()) return std::string();
+	return dir + "/last-game.txt";
+}
+
+std::string HostReadLastGame()
+{
+	const std::string file = LastGameFile();
+	if (file.empty()) return std::string();
+	FILE *fp = fopen(file.c_str(), "rb");
+	if (!fp) return std::string();
+	std::string out;
+	char buf[2048];
+	size_t n;
+	while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) out.append(buf, n);
+	fclose(fp);
+	// the file is written by this function, one path and a newline
+	while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+	if (out.find('\n') != std::string::npos) out.clear(); // never valid as a path
+	return out;
+}
+
+void HostWriteLastGame(const std::string &path)
+{
+	const std::string file = LastGameFile();
+	if (file.empty() || path.find('\n') != std::string::npos) return;
+	FILE *fp = fopen(file.c_str(), "wb");
+	if (!fp) {
+		TVPPrintLog(("launcher: cannot remember the last game in " + file).c_str());
+		return;
+	}
+	fwrite(path.data(), 1, path.size(), fp);
+	fputc('\n', fp);
+	fclose(fp);
+}
+
 void HostInitTestInput()
 {
 	if (!g_test_input_read) ParseTestInput();
