@@ -791,7 +791,12 @@ public:
 	{
 		// returns String
 		if(vt!=tvtString) TJSThrowVariantConvertError(*this, tvtString);
-		return *String;
+		// String is NULL for an empty string (see AsString/AsStringNoAddRef and
+		// GetHint below, which guards it the same way); dereferencing it here
+		// crashed optimised builds, e.g. reading a character of an empty string.
+		// An empty string is still a string, so report it as the empty C string,
+		// as tTJSString::c_str() does.
+		return String ? String->operator const tjs_char *() : TJS_W("");
 	}
 
 	TJS_METHOD_DEF(tjs_uint32 *, GetHint, ())
@@ -1184,7 +1189,15 @@ public:
 			tTJSVariantString *s1, *s2;
 			s1 = AsString();
 			s2 = rhs.AsString();
-			val.String = TJSAllocVariantString(*s1, *s2);
+			// AsString() returns NULL for an empty string - that is how this engine
+			// represents the empty string - and passing the objects by reference
+			// dereferenced that NULL through the const tjs_char* conversion, so an
+			// optimisation-enabled build crashed while constant-folding a literal
+			// such as `"" + 1` at parse time.  TJSAllocVariantString() takes null
+			// pointers to mean the empty string, so hand it the raw pointers.
+			val.String = TJSAllocVariantString(
+				s1 ? s1->operator const tjs_char *() : (const tjs_char *)NULL,
+				s2 ? s2->operator const tjs_char *() : (const tjs_char *)NULL);
 			if(s1) s1->Release();
 			if(s2) s2->Release();
 			return val;
