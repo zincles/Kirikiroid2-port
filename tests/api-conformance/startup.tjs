@@ -563,22 +563,47 @@ check("Storages round trip (image, TVPWriteDataToFile)",
 			: "exists=" + exists + " local=" + local + " leftHalf=" + left + " rightHalf=" + right;
 	});
 
-check("Array.save2 + Scripts.evalStorage",
-	"text written by the engine's saveStruct plugin reads back with the same content",
+// Array.save2 writes a *text listing* of the elements (one per line, no TJS
+// syntax - saveStruct.cpp:227-250), so it is read back with the engine's text
+// reader through csvParser.dll.  Array.saveStruct2 (same plugin, registered as
+// an instance member) writes TJS source for the array and is read back with
+// Scripts.evalStorage; that pairing is what exercises the text reader on a
+// file the engine wrote itself.
+check("Array.save2 + CSVParser (text round trip)",
+	"Array.save2's text listing is read back line by line by the engine's text reader",
 	function() {
 		Plugins.link("saveStruct.dll");
+		Plugins.link("csvParser.dll");
 		var a = ["alpha", "beta"];
 		a.save2("savedata/conformance-text.txt");
 		var exists = Storages.isExistentStorage("savedata/conformance-text.txt");
-		var back = "(no value)";
-		try { back = "" + Scripts.evalStorage("savedata/conformance-text.txt"); }
-		catch (e) { back = "<" + e.message + ">"; }
-		return (exists == 1 && back.indexOf("alpha") >= 0) ? true
-			: "fileWritten=" + exists + " readBack=" + back
-			+ " -NOTE- the same file read as raw bytes is UTF-16LE without a BOM"
-			+ " ('a\\0l\\0p\\0h\\0a\\0\\r\\0\\n\\0...'); the text reader"
-			+ " (base/TextStream.cpp) does not detect it, so it stops at the first"
-			+ " NUL and the whole file collapses to the single token 'a'";
+		var cp = new CSVParser();
+		cp.initStorage("savedata/conformance-text.txt");
+		var r0 = cp.getNextLine();
+		var r1 = cp.getNextLine();
+		var r2 = cp.getNextLine();
+		var v0 = (r0 === void) ? "<void>" : r0[0];
+		var v1 = (r1 === void) ? "<void>" : r1[0];
+		var ended = (r2 === void);
+		return (exists == 1 && v0 == "alpha" && v1 == "beta" && ended) ? true
+			: "fileWritten=" + exists + " line1=[" + v0 + "] line2=[" + v1 + "]"
+			+ " reachedEndOfFile=" + ended;
+	});
+
+check("Array.saveStruct2 + Scripts.evalStorage (struct round trip)",
+	"Array.saveStruct2 writes TJS source for the array and evalStorage evaluates it back to the same values",
+	function() {
+		Plugins.link("saveStruct.dll");
+		var b = [1, "two", 3];
+		b.saveStruct2("savedata/conformance-struct.tjs");
+		var exists = Storages.isExistentStorage("savedata/conformance-struct.tjs");
+		var back = Scripts.evalStorage("savedata/conformance-struct.tjs");
+		if (back === void) return "fileWritten=" + exists + " but evalStorage returned void";
+		var ok = (exists == 1 && back.count == 3 && back[0] == 1
+			&& back[1] == "two" && back[2] == 3);
+		return ok ? true
+			: "fileWritten=" + exists + " count=" + back.count + " back=[" + back + "]"
+			+ " (expected [1,two,3])";
 	});
 
 check("getDirList (dirlist.dll)",
@@ -776,9 +801,7 @@ check("Plugins surface (CSVParser)",
 		var v1 = (line1 !== void && line1.count > 0) ? line1[0] : "<void>";
 		return (v1 == "one") ? true
 			: "CSVParser read [" + v1 + "] from a file whose content is one/two,"
-			+ " secondLine=" + ((line2 === void) ? "<void>" : line2[0])
-			+ " -NOTE- same cause as the Array.save2 round trip: the writer emits"
-			+ " UTF-16LE without a BOM, the text reader does not decode it";
+			+ " secondLine=" + ((line2 === void) ? "<void>" : line2[0]);
 	});
 
 // ---------------------------------------------------------------------------

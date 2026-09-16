@@ -608,6 +608,14 @@ static void TVPEnsurePrimaryBufferPlay()
 	if (!TVPPrimaryBufferPlayingByProgram) {
 		TVPPrimaryBufferPlayingByProgram = true;
 	}
+	// Publish that state to the flag FillBuffer() consults, without waiting for
+	// the mixing thread's next tick.  Otherwise the very first StartPlay() fills
+	// nothing (FillBuffer() returns early while TVPPrimarySoundBufferPlaying is
+	// false), starts a source with nothing queued - which OpenAL immediately
+	// stops - and sets DSBufferPlaying = true regardless, so nothing ever
+	// restarts it: the buffer reports "play" at position 0 forever.  That is the
+	// intermittent first-play stall the API conformance run observed.
+	TVPPrimarySoundBufferPlaying = TVPPrimaryBufferPlayingByProgram;
 #if 0
 	if (TVPPrimaryBuffer)
 	{
