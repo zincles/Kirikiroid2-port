@@ -31,6 +31,13 @@ Debug.message("regress: concatenation ok");
 // indexing: index 0 of an empty string is the empty string, beyond that is an
 // error (the same rule a non-empty string follows)
 if (a[0] != "") throw "index 0 of an empty string is not the empty string";
+// The next statement raises a native error on purpose, and the engine prints the
+// generated code and registers for those the moment they are thrown - before the
+// catch below runs (TJS2 does that for every eTJS raised inside a VM context;
+// Windows had no console to show it on, this port's log is the terminal).  So the
+// dump that follows is expected, not a failure: what matters is that the catch
+// runs and that the process does not crash.
+Debug.message("regress: the engine dump that follows is a deliberate out-of-range read");
 var outOfRange = false;
 try { var c = a[1]; } catch (e) { outOfRange = true; }
 if (!outOfRange) throw "index 1 of an empty string did not raise";

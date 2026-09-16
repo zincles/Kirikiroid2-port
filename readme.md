@@ -70,6 +70,15 @@ An encrypted `.xp3` needs its patch files (`patch.tjs`, `patch.xp3` or
 archive cannot be decrypted.  A directory without `startup.tjs` is reported the
 same way instead of starting an empty window.
 
+The log is the terminal, so it also shows what the engine prints for itself.  One
+line of it looks like a crash but is not: when an engine error is raised inside
+running script code - reading past the end of a string, a missing member, a bad
+argument - TJS2 prints `==== An exception occured at ...` with the generated code
+and a register dump *at the moment it is thrown*, before the script's own
+`try`/`catch` can run.  Windows had no console for that output; here it is visible,
+and it appears even when the script handles the error.  A game that is really
+failing says so in its own words after that, and the exit status is non-zero.
+
 ### Nintendo Switch
 
 Toolchain: [devkitPro](https://devkitpro.org/) with devkitA64 and the switch

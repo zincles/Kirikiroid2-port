@@ -43,6 +43,11 @@ trap '[ "$keep_fixtures" = 1 ] || rm -rf "$work"' EXIT
 
 export SDL_VIDEODRIVER=offscreen
 export SDL_AUDIODRIVER=dummy   # a real device is not required for these checks
+# Keep the engine's own data (its global preference, and the launcher's
+# last-game file) inside the run's scratch directory: without this a test run
+# writes into the user's ~/.local/share/kirikiri2 and the next ./krkr2 opens the
+# browser wherever the last *test* stopped.
+export KRKR2_DATA_DIR="$work/data"
 
 pass=0; fail=0
 declare -a results
