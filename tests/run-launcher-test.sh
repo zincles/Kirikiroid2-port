@@ -48,6 +48,10 @@ Debug.message("launcher-test: zeta started");
 TJS
 python3 tests/make-xp3.py "$work/games/zeta" "$work/games/zeta.xp3" --quiet
 rm -rf "$work/games/zeta"   # only the archive remains, so the listing is deterministic
+# Something that looks like a game but is not: the browser must say why and ask
+# again rather than starting it (it sorts last, so it does not disturb the
+# key sequences of the cases above).
+printf 'this file is not an archive\n' >"$work/games/zz-bad.xp3"
 
 pass=0; fail=0
 declare -a results
@@ -91,6 +95,10 @@ if grep -q "launcher-test: alpha started" "$work/launcher-directory-game.log"; t
 fi
 run_case "launcher-archive-game"   "down,enter" "launcher-test: zeta started" 0
 run_case "launcher-cancel"         "esc" "" 0
+# Nothing that looks like a game but is not can be started: the pick is refused
+# with the reason, the browser comes back, and after 8 refusals it gives up
+# (a scripted run must not sit in a dialog forever).
+run_case "launcher-rejects-non-game" "down,down,enter" "giving up" 3
 
 echo
 echo "launcher test: $pass passed, $fail failed"

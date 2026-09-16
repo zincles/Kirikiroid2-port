@@ -272,7 +272,7 @@ public:
 		: Window(window), Renderer(renderer) {}
 
 	std::string Run(const std::string &title, const std::string &filename,
-		std::string initdir, bool issave)
+		std::string initdir, bool issave, const std::string &preselect = std::string())
 	{
 		// Each dialog of a run starts from the first scripted step, so a run
 		// that opens several dialogs scripts each of them independently.
@@ -282,6 +282,9 @@ public:
 		Title = title.empty()
 			? (SaveMode ? std::string("Save file") : std::string("Open file"))
 			: title;
+		// Start with the cursor on this entry (the launcher uses it to leave the
+		// cursor on something it just rejected, so one step picks the next one).
+		Preselect = preselect;
 
 		SDL_GetWindowSize(Window, &WindowWidth, &WindowHeight);
 		FontSize = std::max(14, std::min(28, WindowHeight / 36));
@@ -1366,6 +1369,18 @@ std::string TVPShowFileSelector(
 	std::string initdir,
 	bool issave)
 {
+	// The engine's entry point (base/win32/FileSelector.cpp declares and calls
+	// this); like the Win32 one it has no initial selection.
+	return TVPShowFileSelectorEx(title, filename, initdir, issave, std::string());
+}
+
+std::string TVPShowFileSelectorEx(
+	const std::string &title,
+	const std::string &filename,
+	std::string initdir,
+	bool issave,
+	const std::string &preselect)
+{
 	SDL_Window *window = krkr2sdl::HostWindow();
 	SDL_Renderer *renderer = krkr2sdl::HostRenderer();
 	if (window == nullptr || renderer == nullptr) {
@@ -1376,5 +1391,5 @@ std::string TVPShowFileSelector(
 		return std::string();
 	}
 	tTVPSDLFileSelector selector(window, renderer);
-	return selector.Run(title, filename, initdir, issave);
+	return selector.Run(title, filename, initdir, issave, preselect);
 }

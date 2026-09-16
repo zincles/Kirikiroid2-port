@@ -63,9 +63,13 @@ picking an archive), `F2` (game pad `X`) takes the folder the cursor is in - whi
 is how a game that is a directory is chosen - and `ESC` cancels.  The keyboard, the
 mouse and a game pad all drive it, and the roots list (`F1`, game pad `BACK`)
 reaches the mounted volumes, so on a handheld with no command line the whole flow
-is game pad only.  The game started last is remembered and the next browsing run
-opens there.  `--browse` asks even when a game was given (it opens at that game) or
-found.
+is game pad only.  Only something the engine can actually start is accepted - an
+archive containing `startup.tjs`, or a folder holding `startup.tjs` or such an
+archive; anything else is refused with the reason, the cursor is left on it and the
+browser comes back, so picking the next candidate is one step (an unattended run
+gives up after 8 refusals instead of asking forever).  The game started last is
+remembered and the next browsing run opens there.  `--browse` asks even when a game
+was given (it opens at that game) or found.
 
 An encrypted `.xp3` needs its patch files (`patch.tjs`, `patch.xp3` or
 `xp3filter.tjs`) beside it, and `krkr2` exits with status 3 and says so if the

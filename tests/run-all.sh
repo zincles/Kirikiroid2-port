@@ -109,7 +109,7 @@ run "file-selector-parent-return" 40 - 'fixtures" entries=5.*selected="subdir"' 
 	-- env KRKR2_FILESEL_TRACE=1 KRKR2_DIALOG_KEYS=enter,home,enter,esc "$binary" tests/file-selector/open
 run "file-selector-cancel" 40 - "call 1 returned 0"   -- env KRKR2_DIALOG_KEYS=esc,esc "$binary" tests/file-selector/open
 # The game browser (launcher): with no game it asks, then starts what was picked.
-run "launcher"         120 - "launcher test: 4 passed, 0 failed" -- bash tests/run-launcher-test.sh --build "$(dirname "$binary")"
+run "launcher"         120 - "launcher test: 5 passed, 0 failed" -- bash tests/run-launcher-test.sh --build "$(dirname "$binary")"
 
 # conformance: assert the summary line; there are no known-failing checks, so the
 # floor is the full count and any failure is a regression

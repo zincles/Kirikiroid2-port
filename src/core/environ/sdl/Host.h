@@ -81,7 +81,10 @@ Uint8 HostGamePadButtonByName(const std::string &name);
 // It needs only the SDL window and renderer (the dialog rasterizes with
 // FreeType, not the engine's font machinery), so it runs before the engine is
 // started, and the game it returns is then started normally - no relaunch.
-std::string HostBrowseForGame(const std::string &initial_directory);
+// `preselect` starts the cursor on that entry, which the launcher uses to leave it
+// on something it just rejected (one step then picks the next one).
+std::string HostBrowseForGame(const std::string &initial_directory,
+	const std::string &preselect = std::string());
 // The game the launcher started last time, remembered next to the engine's data
 // so the next launcher run opens where the user left off.  Empty when unknown.
 std::string HostReadLastGame();
@@ -148,6 +151,9 @@ void HostRecycleTextures();
 // preference/save paths; the launcher remembers the last game there, which has
 // to work before the engine is started.
 const std::string &WritablePath();
-// The modal file selector (environ/sdl/FileSelector.cpp).
+// The modal file selector (environ/sdl/FileSelector.cpp).  TVPShowFileSelector is
+// the engine's entry point; the Ex form adds an entry to start the cursor on.
 std::string TVPShowFileSelector(const std::string &title, const std::string &filename,
 	std::string initdir, bool issave);
+std::string TVPShowFileSelectorEx(const std::string &title, const std::string &filename,
+	std::string initdir, bool issave, const std::string &preselect);

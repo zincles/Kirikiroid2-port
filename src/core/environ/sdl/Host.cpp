@@ -413,11 +413,13 @@ Uint8 HostGamePadButtonByName(const std::string &name)
 //---------------------------------------------------------------------------
 // Launcher
 //---------------------------------------------------------------------------
-std::string HostBrowseForGame(const std::string &initial_directory)
+std::string HostBrowseForGame(const std::string &initial_directory,
+	const std::string &preselect)
 {
 	// The dialog's filter is also its "type to jump" line, so a path in front of
 	// it would be wrong here; the starting directory is passed separately.
-	return TVPShowFileSelector("Select a game", "*.xp3;*.7z", initial_directory, false);
+	return TVPShowFileSelectorEx("Select a game (a .xp3/.7z, or a folder holding "
+		"startup.tjs)", "*.xp3;*.7z", initial_directory, false, preselect);
 }
 
 static std::string LastGameFile()

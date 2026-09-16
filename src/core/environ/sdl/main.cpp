@@ -306,6 +306,46 @@ bool MakeAbsolutePath(const std::string &path, std::string &out)
 	return true;
 }
 
+// Whether a path is a game the engine can start, and why not when it is not.
+// The rules are the ones the no-argument start above uses, so a pick in the
+// browser cannot leave the user with a start-up that fails: a directory carrying
+// startup.tjs itself - or holding an archive that does - or an archive that
+// contains startup.tjs.
+bool DirectoryStartsGame(const std::string &path)
+{
+	if (IsBootableGameDir(path)) return true;
+	bool found = false;
+	TVPListDir(path, [&found, &path](const std::string &name, int mask) {
+		if (found || !(mask & S_IFREG) || !HasXp3Extension(name)) return;
+		if (TVPCheckArchive(ttstr((path + "/" + name).c_str())) == 1) found = true;
+	});
+	return found;
+}
+
+bool IsGamePath(const std::string &path, std::string &why)
+{
+	if (IsDirectoryPath(path)) {
+		if (DirectoryStartsGame(path)) return true;
+		why = "the folder holds neither startup.tjs nor an .xp3 that does";
+		return false;
+	}
+	if (!TVPCheckExistentLocalFile(ttstr(path.c_str()))) {
+		why = "there is nothing at that path";
+		return false;
+	}
+	switch (TVPCheckArchive(ttstr(path.c_str()))) {
+	case 1:
+		return true;
+	case 2:
+		why = "that archive does not contain startup.tjs";
+		return false;
+	default:
+		why = "that is not a KiriKiri archive (an encrypted one also needs its "
+			"patch beside it: patch.tjs / patch.xp3 / xp3filter.tjs)";
+		return false;
+	}
+}
+
 int main(int argc, char **argv)
 {
 	Options opt;
@@ -362,10 +402,13 @@ int main(int argc, char **argv)
 	// picking a game costs nothing extra.
 	if (abs_game_path.empty() || opt.browse) {
 		std::string start_dir;
+		std::string preselect;
 		if (!abs_game_path.empty()) {
 			// --browse with a game: open where that game is
 			start_dir = IsDirectoryPath(abs_game_path)
 				? abs_game_path : DirectoryOf(abs_game_path);
+			preselect = IsDirectoryPath(abs_game_path)
+				? std::string() : abs_game_path.substr(abs_game_path.find_last_of('/') + 1);
 		} else {
 			// where the user left off, else beside the executable (on a handheld
 			// that is where games are kept)
@@ -373,18 +416,43 @@ int main(int argc, char **argv)
 			start_dir = last.empty() ? ExecutableDirectory(argv[0])
 				: (IsDirectoryPath(last) ? last : DirectoryOf(last));
 		}
-		TVPAddLog(ttstr(TJS_W("launcher: browsing in ")) + ttstr(start_dir.c_str()));
-		const std::string chosen = krkr2sdl::HostBrowseForGame(start_dir);
-		if (chosen.empty()) {
-			fprintf(stderr, "krkr2: no game selected.\n");
-			return 0;
+
+		// Ask until something that is actually a game is picked.  A rejected pick
+		// puts the cursor back on it, so the next entry is one step away, and the
+		// loop is bounded so an unattended run cannot sit in a dialog forever.
+		const int kMaxPicks = 8;
+		int picks = 0;
+		for (;;) {
+			TVPAddLog(ttstr(TJS_W("launcher: browsing in ")) + ttstr(start_dir.c_str()));
+			const std::string chosen = krkr2sdl::HostBrowseForGame(start_dir, preselect);
+			if (chosen.empty()) {
+				fprintf(stderr, "krkr2: no game selected.\n");
+				return 0;
+			}
+			std::string resolved;
+			if (!MakeAbsolutePath(chosen, resolved)) {
+				fprintf(stderr, "krkr2: cannot resolve '%s': %s\n",
+					chosen.c_str(), strerror(errno));
+				start_dir = DirectoryOf(chosen);
+				preselect.clear();
+				continue;
+			}
+			std::string why;
+			if (IsGamePath(resolved, why)) {
+				abs_game_path = resolved;
+				TVPAddLog(ttstr(TJS_W("launcher: selected ")) + ttstr(abs_game_path.c_str()));
+				break;
+			}
+			fprintf(stderr, "krkr2: '%s' is not a game: %s.\n", resolved.c_str(), why.c_str());
+			// Ask again where the rejected thing can be seen and step over: in its
+			// parent, with the cursor on it.
+			start_dir = DirectoryOf(resolved);
+			preselect = resolved.substr(resolved.find_last_of('/') + 1);
+			if (++picks >= kMaxPicks) {
+				fprintf(stderr, "krkr2: %d picks were not games; giving up.\n", picks);
+				return 3;
+			}
 		}
-		if (!MakeAbsolutePath(chosen, abs_game_path)) {
-			fprintf(stderr, "krkr2: cannot resolve '%s': %s\n",
-				chosen.c_str(), strerror(errno));
-			return 2;
-		}
-		TVPAddLog(ttstr(TJS_W("launcher: selected ")) + ttstr(abs_game_path.c_str()));
 	}
 
 	// Start the engine.  Failures here are almost always "the game could not be
