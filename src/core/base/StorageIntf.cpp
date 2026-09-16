@@ -776,6 +776,15 @@ public:
 
 		// not exist in the cache
 		tTVPArchive *arc = TVPOpenArchive(name, true);
+		if (!arc)
+		{
+			// The storage exists but every archive creator declined it: an
+			// unknown container format, or a variant they cannot read.  Report
+			// it the same way the "storage not found" branch above does, because
+			// tHolder(arc) would call AddRef() on null (crash) and every caller
+			// dereferences the returned archive unconditionally.
+			TVPThrowExceptionMessage(TVPCannotFindStorage, name);
+		}
 		tHolder holder(arc);
 		ArchiveCache.AddWithHash(name, hash, holder);
 		return arc;

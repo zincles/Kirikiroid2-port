@@ -13,6 +13,11 @@
 #include "ioapi.h"
 #include <unistd.h>
 
+#ifdef __SWITCH__
+// devkitA64's newlib has no lseek64; off_t is already 64-bit there.
+#define lseek64 lseek
+#endif
+
 #ifdef WIN32
 #define _POSIX_
 #include <direct.h>

@@ -1,0 +1,109 @@
+// Raw reproductions for the FAIL lines of ../startup.tjs.
+//
+//   SDL_VIDEODRIVER=offscreen SDL_AUDIODRIVER=dummy ./build/krkr2 tests/api-conformance/repro
+//
+// Every block prints the measured values only; the analysis (engine file/line)
+// lives in the findings table of the task report.  Nothing here asserts, so it
+// is safe to read as the "before" half of a fix.
+
+Debug.message("repro: start");
+var win = new Window();
+win.setInnerSize(320, 240);
+win.visible = true;
+var prim = new Layer(win, null);
+prim.setSize(320, 240);
+prim.visible = true;
+prim.fillRect(0, 0, 320, 240, 0x101010);
+
+// NOTE: '!string' is not a string test in TJS2 ('!' coerces to a number).
+function enc(c) { return ((c & 0xff) << 16) + (c & 0xff00) + ((c & 0xff0000) >> 16); }
+
+// ---- 1. fillRect -> getMainPixel colour fidelity (and the on-disk bytes) ----
+var f = new Layer(win, prim);
+f.setSize(16, 16);
+f.visible = true;
+f.fillRect(0, 0, 16, 16, 0x123456);
+Debug.message("repro fillRect(0x123456): getMainPixel(8,8)=" + f.getMainPixel(8, 8)
+	+ " (0x" + f.getMainPixel(8, 8) + ") expected 1193046 (0x123456)");
+f.saveLayerImage("savedata/repro-fill.bmp", "bmp");
+Debug.message("repro wrote savedata/repro-fill.bmp (bytes 54..61 read 56 34 12 00 = BGR of the colour asked for)");
+
+// ---- 2. PNG load colour fidelity ----
+var img = new Layer(win, prim);
+img.loadImages("quad.png");
+Debug.message("repro quad.png TL(red 0xff0000) -> " + img.getMainPixel(0, 0)
+	+ ", BL(blue 0x0000ff) -> " + img.getMainPixel(0, 2)
+	+ "  (green/white are symmetric: TR=" + img.getMainPixel(2, 0)
+	+ " BR=" + img.getMainPixel(2, 2) + ")");
+
+// ---- 3. Layer.getWidth/getHeight ----
+Debug.message("repro typeof Layer.getWidth=" + typeof prim.getWidth
+	+ " Layer.getHeight=" + typeof prim.getHeight
+	+ " (properties: width=" + prim.width + " height=" + prim.height + ")");
+
+// ---- 4. Storages.isExistentFile / isExistentStorage ----
+Debug.message("repro typeof Storages.isExistentFile=" + typeof Storages.isExistentFile
+	+ " typeof Storages.isExistentStorage=" + typeof Storages.isExistentStorage
+	+ " isExistentStorage('startup.tjs')=" + Storages.isExistentStorage("startup.tjs"));
+
+// ---- 5. text written by saveStruct.dll cannot be read back ----
+Plugins.link("saveStruct.dll");
+var a = ["alpha", "beta"];
+a.save2("savedata/repro-save2.txt");
+Debug.message("repro a.save2 -> file " + Storages.isExistentStorage("savedata/repro-save2.txt")
+	+ " (bytes: 61 00 6c 00 70 00 68 00 61 00 0d 00 0a 00 ... = UTF-16LE, no BOM)");
+try {
+	var back = Scripts.evalStorage("savedata/repro-save2.txt");
+	Debug.message("repro evalStorage -> [" + back + "]");
+} catch (e) {
+	Debug.message("repro evalStorage threw: " + e.message);
+}
+
+// ---- 6. Plugins.unlink ----
+var before = Plugins.getList().count;
+var r = Plugins.unlink("saveStruct.dll");
+var after = Plugins.getList().count;
+Debug.message("repro Plugins.unlink('saveStruct.dll') returned " + r
+	+ ", getList count " + before + " -> " + after + " (module still listed)");
+
+// ---- 7. Dictionary.saveStruct2 calling conventions ----
+var d = %[alpha: 1];
+try { d.saveStruct2("savedata/repro-dict.tjs"); Debug.message("repro d.saveStruct2(file) ok"); }
+catch (e) { Debug.message("repro d.saveStruct2(file) threw: " + e.message); }
+try {
+	Dictionary.saveStruct2(d, "savedata/repro-dict2.tjs");
+	// NOTE: this call creates a stray folder/file named after the dictionary
+	// string in the game directory - that *is* the finding.
+	Debug.message("repro Dictionary.saveStruct2(dict, file) exists="
+		+ Storages.isExistentStorage("savedata/repro-dict2.tjs")
+		+ " (the file it writes is named after the dictionary string, in the game dir)");
+} catch (e) { Debug.message("repro Dictionary.saveStruct2(dict,file) threw: " + e.message); }
+
+// ---- 8. System.addTimer ----
+Debug.message("repro typeof System.addTimer=" + typeof System.addTimer
+	+ " typeof System.addContinuousHandler=" + typeof System.addContinuousHandler);
+
+// ---- 9. Timer / AsyncTrigger never fire (posted TJS events are not pumped) ----
+var t = 0;
+var tgt = %[];
+tgt.tick = function() { t++; };
+var timer = new Timer(tgt, "tick");
+timer.interval = 50;
+timer.enabled = true;
+var at = 0;
+var atgt = %[];
+atgt.fired = function() { at++; };
+var asyncT = new AsyncTrigger(atgt, "fired");
+asyncT.trigger();
+
+var started = System.getTickCount();
+System.addContinuousHandler(function(tick) {
+	if (System.getTickCount() - started >= 1500) {
+		Debug.message("repro after 1500 ms: Timer(50 ms) callbacks=" + t
+			+ ", AsyncTrigger callbacks=" + at
+			+ " (tTVPTimerThread::Execute runs - see gdb - so the trigger happens"
+			+ " and the event is posted, but nothing pumps the posted-event queue)");
+		Debug.message("repro: done");
+		System.exit();
+	}
+});

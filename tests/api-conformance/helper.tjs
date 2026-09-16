@@ -1,0 +1,6 @@
+// Second script inside the game, executed by Scripts.execStorage from
+// startup.tjs.  It writes a value back through a dictionary the caller created
+// (assigning to an undeclared global inside a function body is an error in
+// TJS2, and a shared object is how KAG scripts pass values around anyway).
+Debug.message("api-conformance: helper.tjs executed through Scripts.execStorage");
+apiShared.helperValue = 4242;

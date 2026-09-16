@@ -10,6 +10,11 @@
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 
+#ifdef __SWITCH__
+// devkitA64's newlib has no lseek64; off_t is already 64-bit there.
+#define lseek64 lseek
+#endif
+
 // #include <cderr.h>
 // #include <objbase.h>
 
@@ -32,13 +37,20 @@
 #include "StringUtil.h"
 #include "FilePathUtil.h"
 #include "Platform.h"
-#include "platform/CCPlatformConfig.h"
 #include "dirent.h"
 #include "TickCount.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include "combase.h"
 #include "win32io.h"
+
+// glibc's <sys/stat.h> defines st_atime/st_mtime/st_ctime as macros aliasing
+// st_atim.tv_sec and friends on "struct stat".  tTVP_stat (environ/Platform.h)
+// declares plain members with exactly those names, so the aliases must be
+// dropped here or every access below is rewritten into a nonexistent member.
+#undef st_atime
+#undef st_mtime
+#undef st_ctime
 
 //---------------------------------------------------------------------------
 // tTVPFileMedia
@@ -230,7 +242,12 @@ static int _utf8_strcasecmp(const char *a, const char *b) {
     return *a - *b;
 }
 
-#if CC_TARGET_PLATFORM == CC_PLATFORM_IOS
+// The block below maps iOS application home directories onto storage names and
+// needs TVPGetApplicationHomeDirectory(), which only the iOS platform layer
+// provides.  cocos2d-x used to supply CC_TARGET_PLATFORM/CC_PLATFORM_IOS here;
+// the build now signals that port through CC_TARGET_OS_IPHONE, the same macro
+// the rest of the tree uses (base/win32/win32io.h, utils/win32/ThreadImpl.cpp).
+#ifdef CC_TARGET_OS_IPHONE
 const std::vector<std::string> &TVPGetApplicationHomeDirectory();
 const std::vector<ttstr> &_getPrefixPath() {
 	static std::vector<ttstr> ret;
@@ -302,7 +319,7 @@ void TJS_INTF_METHOD tTVPFileMedia::GetLocallyAccessibleName(ttstr &name)
         ptr += 2;  // skip "./"
         newname.Clear();
     }
-#if CC_TARGET_PLATFORM == CC_PLATFORM_IOS
+#ifdef CC_TARGET_OS_IPHONE
     {
         std::string prefix = "/";
         prefix += tTJSNarrowStringHolder(ptr).Buf;
@@ -586,11 +603,15 @@ bool TVPCheckExistentLocalFolder(const ttstr &name)
 
 
 tTVPArchive * TVPOpenZIPArchive(const ttstr & name, tTJSBinaryStream *st, bool normalizeFileName);
+#if defined(KRKR2_ENABLE_7Z)
 tTVPArchive * TVPOpen7ZArchive(const ttstr & name, tTJSBinaryStream *st, bool normalizeFileName);
+#endif
 tTVPArchive * TVPOpenTARArchive(const ttstr & name, tTJSBinaryStream *st, bool normalizeFileName);
 static tTVPArchive*(*ArchiveCreators[])(const ttstr & name, tTJSBinaryStream *st, bool normalizeFileName) = {
 	TVPOpenZIPArchive,
+#if defined(KRKR2_ENABLE_7Z)
 	TVPOpen7ZArchive,
+#endif
 	TVPOpenTARArchive,
 	tTVPXP3Archive::Create
 };

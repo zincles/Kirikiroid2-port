@@ -1,0 +1,3 @@
+// Evaluated (not executed) by Scripts.evalStorage: the file's value is its
+// single expression, which must come back to the caller as a number.
+1000 + 234

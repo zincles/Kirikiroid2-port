@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>	// size_t (etcpak.h is included first by etcpak.cpp)
 #include <functional>
 
 // from https://bitbucket.org/wolfpld/etcpak.git

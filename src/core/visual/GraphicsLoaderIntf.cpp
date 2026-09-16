@@ -66,13 +66,23 @@ static void TVPLoadGraphicRouter(void* formatdata, void *callbackdata, tTVPGraph
 			return CALL_LOAD_FUNC(TVPLoadJPEG);
 		}
 		if (!memcmp(header, "BPG", 3)) {
+#if defined(KRKR2_ENABLE_BPG)
 			return CALL_LOAD_FUNC(TVPLoadBPG);
+#else
+			// The BPG decoder (libbpg) is not part of this build.
+			TVPThrowExceptionMessage(TVPImageLoadError, TJS_W("BPG (no BPG decoder in this build)"));
+#endif
 		}
 		if (!memcmp(header, "RIFF", 4) && !memcmp(header + 8, "WEBPVP8", 7)) {
 			return CALL_LOAD_FUNC(TVPLoadWEBP);
 		}
 		if (!memcmp(header, "\x49\x49\xbc\x01", 4)) {
+#if defined(KRKR2_ENABLE_JXR)
 			return CALL_LOAD_FUNC(TVPLoadJXR);
+#else
+			// The JPEG-XR decoder (jxrlib) is not part of this build.
+			TVPThrowExceptionMessage(TVPImageLoadError, TJS_W("JPEG-XR (no JPEG-XR decoder in this build)"));
+#endif
 		}
 		if (!memcmp(header, "PVR\3", 4)) {
 			return CALL_LOAD_FUNC(TVPLoadPVRv3);
@@ -102,13 +112,21 @@ static void TVPLoadHeaderRouter(void* formatdata, tTJSBinaryStream *src, iTJSDis
 			return CALL_LOAD_FUNC(TVPLoadHeaderJPG);
 		}
 		if (!memcmp(header, "BPG", 3)) {
+#if defined(KRKR2_ENABLE_BPG)
 			return CALL_LOAD_FUNC(TVPLoadHeaderBPG);
+#else
+			TVPThrowExceptionMessage(TVPImageLoadError, TJS_W("BPG (no BPG decoder in this build)"));
+#endif
 		}
 		if (!memcmp(header, "RIFF", 4) && !memcmp(header + 8, "WEBPVP8", 7)) {
 			return CALL_LOAD_FUNC(TVPLoadHeaderWEBP);
 		}
 		if (!memcmp(header, "\x49\x49\xbc\x01", 4)) {
+#if defined(KRKR2_ENABLE_JXR)
 			return CALL_LOAD_FUNC(TVPLoadHeaderJXR);
+#else
+			TVPThrowExceptionMessage(TVPImageLoadError, TJS_W("JPEG-XR (no JPEG-XR decoder in this build)"));
+#endif
 		}
 		if (!memcmp(header, "PVR\3", 4)) {
 			return CALL_LOAD_FUNC(TVPLoadHeaderPVRv3);
@@ -158,8 +176,10 @@ public:
 		// register some native-supported formats
 		Handlers.push_back(tTVPGraphicHandlerType(
 			TJS_W(".pvr"), TVPLoadGraphicRouter, TVPLoadHeaderRouter, nullptr, nullptr, NULL));
+#if defined(KRKR2_ENABLE_JXR)
 		Handlers.push_back(tTVPGraphicHandlerType(
 			TJS_W(".jxr"), TVPLoadGraphicRouter, TVPLoadHeaderRouter, TVPSaveAsJXR, TVPAcceptSaveAsJXR, NULL));
+#endif
 		Handlers.push_back(tTVPGraphicHandlerType(
 			TJS_W(".bpg"), TVPLoadGraphicRouter, TVPLoadHeaderRouter, nullptr, nullptr, NULL));
 		Handlers.push_back(tTVPGraphicHandlerType(
@@ -1647,7 +1667,7 @@ bool TVPCheckImageCache( const ttstr& nname, tTVPBaseBitmap* dest, tTVPGraphicLo
 	return false;
 }
 //---------------------------------------------------------------------------
-// åüçıÇæÇØÇ∑ÇÈ
+// ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ
 bool TVPHasImageCache( const ttstr& nname, tTVPGraphicLoadMode mode, tjs_uint dw, tjs_uint dh, tjs_int32 keyidx )
 {
 	tjs_uint32 hash;

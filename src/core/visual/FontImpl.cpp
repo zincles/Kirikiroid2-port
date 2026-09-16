@@ -18,7 +18,12 @@
 #ifdef _MSC_VER
 #pragma comment(lib,"freetype.lib")
 #endif
+// The cocos2d-x asset lookup is only used by the Android build's bundled
+// fonts; the SDL2 port resolves fonts through the engine storage layer and
+// system font directories.
+#if !defined(TVP_SDL2)
 #include "platform/CCFileUtils.h"
+#endif
 #include "StorageImpl.h"
 #include "BinaryStream.h"
 
@@ -200,6 +205,11 @@ void TVPInitFontNames()
 		
 		if (TVPEnumFontsProc(Android_GetInternalStoragePath() + "/default.ttf")) break;
 
+#if defined(TVP_SDL2)
+		// SDL2 build on Android: resolve the bundled font through the engine's
+		// own storage layer instead of cocos2d-x FileUtils.
+		if (TVPEnumFontsProc(TJS_W("DroidSansFallback.ttf"))) break;
+#else
 		{	// from internal storage
 			auto data = cocos2d::FileUtils::getInstance()->getDataFromFile("DroidSansFallback.ttf");
 			if (TVPInternalEnumFonts(data.getBytes(), data.getSize(), "DroidSansFallback.ttf", [](TVPFontNamePathInfo* info)->tTJSBinaryStream* {
@@ -210,6 +220,7 @@ void TVPInitFontNames()
 				return ret;
 			})) break;
 		}
+#endif
 		if (TVPEnumFontsProc(TJS_W("file://./system/fonts/DroidSansFallback.ttf"))) break;
 		if (TVPEnumFontsProc(TJS_W("file://./system/fonts/NotoSansHans-Regular.otf"))) break;
 		if (TVPEnumFontsProc(TJS_W("file://./system/fonts/DroidSans.ttf"))) break;
@@ -218,8 +229,33 @@ void TVPInitFontNames()
 		if (TVPEnumFontsProc(TJS_W("file://./c/windows/fonts/simhei.ttf"))) break;
 #endif
         
+        
+#if defined(TVP_SDL2)
+		// Last resort before the app's own fonts/ directory: fonts shipped by
+		// the system. CJK-capable faces first, since these games are usually
+		// Japanese/Chinese and the built-in fallback must render their glyphs.
+		{
+			static const char *system_fonts[] = {
+				"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+				"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+				"/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+				"/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+				"/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+				"/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+				"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+				"/usr/share/fonts/TTF/DejaVuSans.ttf",
+				"/usr/share/fonts/dejavu/DejaVuSans.ttf",
+				"/system/fonts/DroidSansFallback.ttf",
+			};
+			for (const char *path : system_fonts) {
+				if (!TVPCheckExistentLocalFile(path)) continue;
+				if (TVPEnumFontsProc(TJS_W("file://") + ttstr(path))) break;
+			}
+		}
+#else
         std::string fullPath = cocos2d::FileUtils::getInstance()->fullPathForFilename("DroidSansFallback.ttf");
         if (TVPEnumFontsProc(fullPath)) break;
+#endif
 	} while (false);
     if(TVPFontNames.GetCount() > 0)
     {

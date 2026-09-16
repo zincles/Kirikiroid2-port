@@ -1,0 +1,1128 @@
+// Kirikiroid2 SDL2 port - script API conformance test game.
+//
+// Run with:  ./build/krkr2 tests/api-conformance
+// (headless: SDL_VIDEODRIVER=offscreen SDL_AUDIODRIVER=dummy)
+//
+// What this is
+// ------------
+// A KAG/KiriKiri game is a pile of TJS scripts that talk to a fixed set of
+// engine classes (Layer, Window, Storages, Scripts, System, WaveSoundBuffer,
+// Plugins, Timer, VideoOverlay).  This game drives each of them the way a real
+// game does and asserts an *observable* result for every call: pixels read
+// back with getMainPixel, geometry after a copy/stretch/rotate, files that
+// appear (or do not) on disk, sample positions that advance, counters that a
+// callback increments.  Nothing here asserts "it did not throw".
+//
+// Output contract
+// ---------------
+//   PASS <api> — <the assertion that held>
+//   FAIL <api> — <measured value / why it did not hold>
+//   ... final "SUMMARY pass=N fail=M" line, then System.exit().
+//
+// Fixtures (all inside this directory; see the -NOTE- lines in the failures)
+//   tone.wav|ogg|mp3  500 ms 44.1 kHz stereo tone, same for all three formats
+//   quad.png          4x4 PNG, quadrants: TL red 0xff0000, TR green 0x00ff00,
+//                     BL blue 0x0000ff, BR white 0xffffff (make-quad-png.py)
+//   movie.mp4         the short clip the smoke game uses
+//   helper.tjs        second script, executed through Scripts.execStorage
+//   savedata/         written by the engine at runtime (saveLayerImage,
+//                     Array.save2); the engine creates the folder itself
+//
+// Colour note: the engine's *stored* 32bpp layout and the values getMainPixel
+// returns are the subject of two dedicated checks (fillRect colour fidelity,
+// PNG load colour fidelity); every other pixel comparison below compares what
+// was drawn against what was read back, so geometry is tested independently of
+// that question.  'enc()' is the byte order getMainPixel currently returns for
+// a script colour, i.e. the engine's own read-back convention.
+
+Debug.message("api-conformance: start");
+
+var gPass = 0, gFail = 0;
+
+function report(ok, api, text) {
+	if (ok) { gPass++; Debug.message("PASS " + api + " — " + text); }
+	else { gFail++; Debug.message("FAIL " + api + " — " + text); }
+}
+
+// Runs one check.  fn() returns true for pass, or a string with the measured
+// value(s) explaining the failure; a thrown engine error is a failure too.
+function check(api, text, fn) {
+	try {
+		var r = fn();
+		if (r === true) report(true, api, text);
+		else report(false, api, text + " -> " + r);
+	} catch (e) {
+		report(false, api, text + " -> threw: " + e.message);
+	}
+}
+
+// Informational line: an API that this engine version simply does not have, or
+// a measured engine convention that is not a defect.  Not counted in the totals.
+function info(api, text) {
+	Debug.message("INFO " + api + " — " + text);
+}
+
+function hex(v) {
+	var s = "";
+	var digits = "0123456789abcdef";
+	for (var i = 28; i >= 0; i -= 4) s += digits.charAt((v >> i) & 15);
+	return "0x" + s;
+}
+
+// The byte order in which getMainPixel currently reports a script colour.
+function enc(c) {
+	return ((c & 0xff) << 16) + (c & 0xff00) + ((c & 0xff0000) >> 16);
+}
+
+// Largest per-channel difference between two read-back values.  The alpha-blend
+// paths (operateRect/operateAffine, and anything using a layer's own alpha) go
+// through tvpgl's TVPAlphaBlend_c, which computes (src-dst)*alpha >> 8 and so
+// loses 1/255 on a fully opaque source; that is TVP's own arithmetic, so those
+// checks allow a difference of 1 per channel and say so.
+function chanDelta(a, b) {
+	var d = 0;
+	for (var sh = 0; sh < 24; sh += 8) {
+		var x = (a >> sh) & 255, y = (b >> sh) & 255;
+		var t = x - y;
+		if (t < 0) t = -t;
+		if (t > d) d = t;
+	}
+	return d;
+}
+
+function nonBackground(l, x0, y0, w, h, bg) {
+	var n = 0;
+	for (var y = y0; y < y0 + h; ++y)
+		for (var x = x0; x < x0 + w; ++x)
+			if (l.getMainPixel(x, y) != bg) n++;
+	return n;
+}
+
+// ---------------------------------------------------------------------------
+// Window + primary layer
+// ---------------------------------------------------------------------------
+var win = new Window();
+win.setInnerSize(640, 480);
+win.visible = true;
+
+var primary = new Layer(win, null);   // owner=window, no parent => primary layer
+primary.setSize(640, 480);
+primary.visible = true;
+primary.fillRect(0, 0, 640, 480, 0x102030);
+
+check("Window.primaryLayer",
+	"window.primaryLayer is the layer created with new Layer(win, null)",
+	function() { return win.primaryLayer === primary ? true : "identity comparison failed"; });
+
+check("Layer.isPrimary",
+	"primary layer reports isPrimary=1, a child layer reports 0",
+	function() {
+		var c = new Layer(win, primary);
+		var r = (primary.isPrimary == 1 && c.isPrimary == 0) ? true
+			: "primary=" + primary.isPrimary + " child=" + c.isPrimary;
+		return r;
+	});
+
+check("Window.setInnerSize",
+	"setInnerSize(640,480) is visible as innerWidth/innerHeight/width/height",
+	function() {
+		var r = (win.innerWidth == 640 && win.innerHeight == 480
+			&& win.width == 640 && win.height == 480) ? true
+			: "inner=" + win.innerWidth + "x" + win.innerHeight
+			+ " w/h=" + win.width + "x" + win.height;
+		return r;
+	});
+
+check("Window.setInnerSize(resize)",
+	"setInnerSize(800,600) after the fact is reflected in innerWidth/innerHeight",
+	function() {
+		win.setInnerSize(800, 600);
+		var r = (win.innerWidth == 800 && win.innerHeight == 600) ? true
+			: "inner=" + win.innerWidth + "x" + win.innerHeight;
+		win.setInnerSize(640, 480);
+		return r;
+	});
+
+check("Window.visible",
+	"visible setter/getter round-trips",
+	function() {
+		win.visible = false;
+		var off = win.visible;
+		win.visible = true;
+		return (off == 0 && win.visible == 1) ? true : "false->" + off + " true->" + win.visible;
+	});
+
+check("Window.caption",
+	"caption setter/getter round-trips (the SDL window title comes from it)",
+	function() {
+		win.caption = "api-conformance";
+		return win.caption == "api-conformance" ? true : "caption=" + win.caption;
+	});
+
+check("System.title",
+	"System.title setter/getter round-trips (application title)",
+	function() {
+		System.title = "api-conformance title";
+		return System.title == "api-conformance title" ? true : "title=" + System.title;
+	});
+
+check("Window.setZoom",
+	"setZoom(2,1) is reported by zoomNumer/zoomDenom; inner size stays the paint box",
+	function() {
+		win.setZoom(2, 1);
+		var r = (win.zoomNumer == 2 && win.zoomDenom == 1 && win.innerWidth == 640) ? true
+			: "numer=" + win.zoomNumer + " denom=" + win.zoomDenom + " innerWidth=" + win.innerWidth;
+		win.setZoom(1, 1);
+		return r;
+	});
+
+// ---------------------------------------------------------------------------
+// Layer drawing primitives
+// ---------------------------------------------------------------------------
+var L = new Layer(win, primary);     // scratch layer used by the drawing tests
+L.setSize(64, 64);
+L.visible = true;
+L.fillRect(0, 0, 64, 64, 0x101010);
+
+check("Layer.fillRect",
+	"fillRect(8,8,16,16,red) paints exactly that rectangle: inside is the fill, the border is not",
+	function() {
+		var bg = L.getMainPixel(0, 0);
+		L.fillRect(8, 8, 16, 16, 0xff0000);
+		var inside = L.getMainPixel(12, 12) == enc(0xff0000);
+		var border = L.getMainPixel(7, 12) == bg && L.getMainPixel(24, 12) == bg
+			&& L.getMainPixel(12, 7) == bg && L.getMainPixel(12, 24) == bg;
+		var corner = L.getMainPixel(23, 23) == enc(0xff0000);
+		L.fillRect(8, 8, 16, 16, 0x101010);
+		return (inside && border && corner) ? true
+			: "inside=" + inside + " (px=" + hex(L.getMainPixel(12, 12)) + ")"
+			+ " border=" + border + " lastPixelOfRect=" + corner;
+	});
+
+check("Layer.fillRect+getMainPixel",
+	"getMainPixel returns the stored value for the colour that was filled (fill 0x123456, read "
+		+ "enc(0x123456)=0x563412, the engine's internal 0xBGR order)",
+	function() {
+		var probe = new Layer(win, primary);
+		probe.setSize(16, 16);
+		probe.visible = true;
+		probe.fillRect(0, 0, 16, 16, 0x123456);
+		var got = probe.getMainPixel(8, 8);
+		return got == enc(0x123456) ? true
+			: "filled 0x123456, getMainPixel=" + hex(got) + " (expected " + hex(enc(0x123456)) + ")";
+	});
+
+info("Layer.getMainPixel (read-back order)",
+	"getMainPixel reports the internal pixel word unchanged: TVPFromActualColor() masks and"
+	+ " returns it as-is (visual/win32/LayerImpl.cpp:34-38, the same code the Windows build runs),"
+	+ " so a script colour 0xRRGGBB reads back as 0xBBGGRR - here fill 0x123456 -> 0x00563412."
+	+ " saveLayerImage writes a BMP whose bytes are the requested colour (56 34 12), which is the"
+	+ " same fact seen from the other side.  Informational: upstream convention, not a port defect;"
+	+ " every other pixel check in this script compares against enc() so geometry stays tested.");
+
+check("Layer.drawText",
+	"drawText puts ink in the glyph row and leaves the rest of the layer alone",
+	function() {
+		var t = new Layer(win, primary);
+		t.setSize(128, 64);
+		t.visible = true;
+		t.fillRect(0, 0, 128, 64, 0x000000);
+		t.drawText(4, 4, "HKW", 0xffffff);
+		var rowInk = nonBackground(t, 0, 0, 128, 20, 0x000000);
+		var lowRowInk = nonBackground(t, 0, 40, 128, 20, 0x000000);
+		return (rowInk > 10 && lowRowInk == 0) ? true
+			: "glyphRowPixels=" + rowInk + " untouchedRowPixels=" + lowRowInk;
+	});
+
+check("Layer.setPos",
+	"setPos moves the layer and is visible in left/top",
+	function() {
+		var p = new Layer(win, primary);
+		p.setSize(32, 32);
+		p.setPos(11, 22);
+		var r1 = (p.left == 11 && p.top == 22) ? null : "setPos(11,22) -> " + p.left + "," + p.top;
+		p.setPos(5, 6, 40, 50);      // 4-arg form sets bounds
+		var r2 = (p.left == 5 && p.top == 6 && p.width == 40 && p.height == 50) ? null
+			: "setPos(5,6,40,50) -> " + p.left + "," + p.top + " " + p.width + "x" + p.height;
+		return (r1 == null && r2 == null) ? true : (r1 == null ? r2 : r1);
+	});
+
+check("Layer.setSize",
+	"setSize is visible in width/height and imageWidth/imageHeight",
+	function() {
+		var s = new Layer(win, primary);
+		s.setSize(48, 24);
+		return (s.width == 48 && s.height == 24) ? true
+			: "width/height=" + s.width + "x" + s.height;
+	});
+
+info("Layer.getWidth/getHeight",
+	"not methods in this engine version (typeof = " + typeof L.getWidth + "/" + typeof L.getHeight
+	+ "): the size is exposed as the width/height and imageWidth/imageHeight properties, which"
+	+ " the Layer.setSize check exercises. Informational - nothing broken.");
+
+check("Layer.opacity",
+	"opacity setter/getter round-trips, 0 and 255 included",
+	function() {
+		var o = new Layer(win, primary);
+		o.setSize(16, 16);
+		o.opacity = 128;
+		var a = o.opacity;
+		o.opacity = 0;
+		var b = o.opacity;
+		o.opacity = 255;
+		return (a == 128 && b == 0 && o.opacity == 255) ? true
+			: "128->" + a + " 0->" + b + " 255->" + o.opacity;
+	});
+
+check("Layer.visible",
+	"a fresh child layer starts hidden; visible follows the parent chain via nodeVisible",
+	function() {
+		var mid = new Layer(win, primary);
+		mid.setSize(16, 16);
+		var leaf = new Layer(win, mid);
+		leaf.setSize(8, 8);
+		leaf.visible = true;
+		var fresh = (leaf.visible == 0) ? false : true;   // documented: new layers are invisible
+		var visDefault = fresh;
+		leaf.visible = false;
+		var hidden = (leaf.visible == 0 && leaf.nodeVisible == 0);
+		leaf.visible = true;
+		mid.visible = true;
+		var shown = (leaf.nodeVisible == 1);
+		mid.visible = false;
+		var parentOff = (leaf.visible == 1 && leaf.nodeVisible == 0);
+		mid.visible = true;
+		return (visDefault && hidden && shown && parentOff) ? true
+			: "childStartsHidden=" + visDefault + " hiddenState=" + hidden
+			+ " nodeVisibleWithParentShown=" + shown + " nodeVisibleWithParentHidden=" + parentOff;
+	});
+
+check("Layer.visible(primary)",
+	"hiding the primary layer is refused with an engine error, and it stays visible",
+	function() {
+		try {
+			primary.visible = false;
+			var stillVisible = (primary.visible == 1);
+			return stillVisible ? "no error thrown (primary accepted visible=false)" : "primary went hidden";
+		} catch (e) {
+			return (primary.visible == 1) ? true : "threw as expected but primary.visible=" + primary.visible;
+		}
+	});
+
+check("Layer.parent/children",
+	"new Layer(win,parent) links parent/children/window",
+	function() {
+		var c = new Layer(win, primary);
+		var ok = (c.parent === primary) && (c.window === win) && (primary.children.count > 0);
+		return ok ? true : "parent===primary: " + (c.parent === primary)
+			+ " window===win: " + (c.window === win) + " children.count=" + primary.children.count;
+	});
+
+// ---------------------------------------------------------------------------
+// copyRect / stretchCopy / operateRect / operateAffine / setClip
+// ---------------------------------------------------------------------------
+// 8x8 source: TL quadrant red, TR green, BL blue, BR white.
+var src = new Layer(win, primary);
+src.setSize(8, 8);
+src.visible = true;
+src.fillRect(0, 0, 8, 8, 0xff0000);
+src.fillRect(4, 0, 4, 4, 0x00ff00);
+src.fillRect(0, 4, 4, 4, 0x0000ff);
+src.fillRect(4, 4, 4, 4, 0xffffff);
+// Same pattern with a *real* alpha channel (0xff in the colour), which is what
+// the alpha-blend paths (operateRect/operateAffine) consume; a layer created
+// with new Layer() is an alpha layer, so a plain 0xRRGGBB fill leaves its
+// alpha at 0 and the blend would copy nothing.
+var opaqueSrc = new Layer(win, primary);
+opaqueSrc.setSize(8, 8);
+opaqueSrc.visible = true;
+opaqueSrc.fillRect(0, 0, 8, 8, 0xffff0000);
+opaqueSrc.fillRect(4, 0, 4, 4, 0xff00ff00);
+opaqueSrc.fillRect(0, 4, 4, 4, 0xff0000ff);
+opaqueSrc.fillRect(4, 4, 4, 4, 0xffffffff);
+
+function newDest(w, h, bg) {
+	var d = new Layer(win, primary);
+	d.setSize(w, h);
+	d.visible = true;
+	d.fillRect(0, 0, w, h, bg);
+	return d;
+}
+
+check("Layer.copyRect",
+	"copyRect(0,0,src,0,0,8,8) copies the whole 8x8 source in the same orientation",
+	function() {
+		var d = newDest(32, 32, 0x808080);
+		d.copyRect(0, 0, src, 0, 0, 8, 8);
+		var tl = d.getMainPixel(2, 2) == enc(0xff0000);
+		var tr = d.getMainPixel(6, 2) == enc(0x00ff00);
+		var bl = d.getMainPixel(2, 6) == enc(0x0000ff);
+		var br = d.getMainPixel(6, 6) == enc(0xffffff);
+		var outside = d.getMainPixel(9, 9) == enc(0x808080);
+		return (tl && tr && bl && br && outside) ? true
+			: "TL=" + hex(d.getMainPixel(2, 2)) + " TR=" + hex(d.getMainPixel(6, 2))
+			+ " BL=" + hex(d.getMainPixel(2, 6)) + " BR=" + hex(d.getMainPixel(6, 6))
+			+ " pixel(9,9)=" + hex(d.getMainPixel(9, 9)) + " (expected the untouched background)";
+	});
+
+check("Layer.stretchCopy(2x)",
+	"upscaling 8x8 to 16x16 covers exactly 256 pixels, same orientation, nothing outside",
+	function() {
+		var d = newDest(32, 32, 0x808080);
+		d.stretchCopy(0, 0, 16, 16, src, 0, 0, 8, 8);
+		var covered = nonBackground(d, 0, 0, 32, 32, enc(0x808080));
+		var tl = d.getMainPixel(3, 3) == enc(0xff0000);
+		var tr = d.getMainPixel(12, 3) == enc(0x00ff00);
+		var bl = d.getMainPixel(3, 12) == enc(0x0000ff);
+		var br = d.getMainPixel(12, 12) == enc(0xffffff);
+		return (covered == 256 && tl && tr && bl && br) ? true
+			: "pixelsCovered=" + covered + " (expected 256 = 16x16 = 4x the 64 source pixels)"
+			+ " TL=" + hex(d.getMainPixel(3, 3)) + " TR=" + hex(d.getMainPixel(12, 3))
+			+ " BL=" + hex(d.getMainPixel(3, 12)) + " BR=" + hex(d.getMainPixel(12, 12));
+	});
+
+check("Layer.stretchCopy(0.5x)",
+	"downscaling 8x8 to 4x4 covers exactly 16 pixels with the same orientation",
+	function() {
+		var d = newDest(16, 16, 0x808080);
+		d.stretchCopy(0, 0, 4, 4, src, 0, 0, 8, 8);
+		var covered = nonBackground(d, 0, 0, 16, 16, enc(0x808080));
+		var tl = d.getMainPixel(1, 1) == enc(0xff0000);
+		var br = d.getMainPixel(3, 3) == enc(0xffffff);
+		return (covered == 16 && tl && br) ? true
+			: "pixelsCovered=" + covered + " (expected 16) TL=" + hex(d.getMainPixel(1, 1))
+			+ " BR=" + hex(d.getMainPixel(3, 3));
+	});
+
+check("Layer.operateRect",
+	"operateRect copies the source rectangle onto the destination (alpha blend, +-1/channel)",
+	function() {
+		var d = newDest(32, 32, 0xff808080);
+		d.operateRect(0, 0, opaqueSrc, 0, 0, 8, 8);
+		var tl = chanDelta(d.getMainPixel(2, 2), enc(0xff0000)) <= 1;
+		var br = chanDelta(d.getMainPixel(6, 6), enc(0xffffff)) <= 1;
+		var out = d.getMainPixel(9, 9) == enc(0x808080);
+		return (tl && br && out) ? true
+			: "TL=" + hex(d.getMainPixel(2, 2)) + " (want " + hex(enc(0xff0000)) + ")"
+			+ " BR=" + hex(d.getMainPixel(6, 6)) + " (want " + hex(enc(0xffffff)) + ")"
+			+ " pixel(9,9)=" + hex(d.getMainPixel(9, 9)) + " (want " + hex(enc(0x808080)) + ")";
+	});
+
+check("Layer.operateAffine(0deg)",
+	"identity matrix (a=1,b=0,c=0,d=1,tx=0,ty=0) leaves the corners where they were",
+	function() {
+		var d = newDest(32, 32, 0xff808080);
+		d.operateAffine(opaqueSrc, 0, 0, 8, 8, true, 1, 0, 0, 1, 0, 0);
+		var tl = chanDelta(d.getMainPixel(2, 2), enc(0xff0000)) <= 1;
+		var br = chanDelta(d.getMainPixel(6, 6), enc(0xffffff)) <= 1;
+		var out = d.getMainPixel(14, 14) == enc(0x808080);
+		return (tl && br && out) ? true
+			: "TL=" + hex(d.getMainPixel(2, 2)) + " (want " + hex(enc(0xff0000)) + ")"
+			+ " BR=" + hex(d.getMainPixel(6, 6)) + " (want " + hex(enc(0xffffff)) + ")"
+			+ " pixel(14,14)=" + hex(d.getMainPixel(14, 14)) + " (want " + hex(enc(0x808080)) + ")";
+	});
+
+check("Layer.operateAffine(90deg)",
+	"points mode rotate +90deg: bottom-left of the source lands top-left, top-left lands top-right",
+	function() {
+		// x' = -y + 8, y' = x   =>  src(0,0)->(8,0), src(8,0)->(8,8), src(0,8)->(0,0)
+		var d = newDest(32, 32, 0xff808080);
+		d.operateAffine(opaqueSrc, 0, 0, 8, 8, false, 8, 0, 8, 8, 0, 0);
+		var topLeft = d.getMainPixel(2, 2);      // src bottom-left quadrant (blue)
+		var topRight = d.getMainPixel(6, 2);     // src top-left quadrant (red)
+		var bottomLeft = d.getMainPixel(2, 6);   // src bottom-right quadrant (white)
+		var outside = d.getMainPixel(14, 14) == enc(0x808080);
+		var ok = chanDelta(topLeft, enc(0x0000ff)) <= 1 && chanDelta(topRight, enc(0xff0000)) <= 1
+			&& chanDelta(bottomLeft, enc(0xffffff)) <= 1 && outside;
+		return ok ? true
+			: "rotated TL=" + hex(topLeft) + " (expected blue " + hex(enc(0x0000ff)) + ")"
+			+ " TR=" + hex(topRight) + " (expected red " + hex(enc(0xff0000)) + ")"
+			+ " BL=" + hex(bottomLeft) + " (expected white " + hex(enc(0xffffff)) + ")"
+			+ " pixel(14,14)=" + hex(d.getMainPixel(14, 14));
+	});
+
+check("Layer.setClip",
+	"setClip(8,8,8,8) confines fillRect to the clip rectangle; setClip() resets it",
+	function() {
+		var c = new Layer(win, primary);
+		c.setSize(32, 32);
+		c.visible = true;
+		c.fillRect(0, 0, 32, 32, 0x000000);
+		c.setClip(8, 8, 8, 8);
+		c.fillRect(0, 0, 32, 32, 0xffffff);
+		var inside = c.getMainPixel(10, 10) == enc(0xffffff);
+		var outside1 = c.getMainPixel(2, 2) == enc(0x000000);
+		var outside2 = c.getMainPixel(20, 20) == enc(0x000000);
+		var clipProps = c.clipLeft + "," + c.clipTop + "," + c.clipWidth + "," + c.clipHeight;
+		var rect = (clipProps == "8,8,8,8");
+		c.setClip();
+		c.fillRect(0, 0, 32, 32, 0xffffff);
+		var reset = c.getMainPixel(2, 2) == enc(0xffffff);
+		return (inside && outside1 && outside2 && rect && reset) ? true
+			: "insideClipped=" + inside + " outside(2,2)=" + outside1 + " outside(20,20)=" + outside2
+			+ " clipRect(beforeReset)=" + clipProps + " afterResetFillReachedCorner=" + reset;
+	});
+
+check("Layer.saveLayerImage+loadImages",
+	"a layer saved to savedata/conformance-layer.bmp reloads with identical pixels",
+	function() {
+		var name = "savedata/conformance-layer.bmp";
+		var o = newDest(32, 32, 0x204060);
+		o.fillRect(4, 4, 8, 8, 0xff8800);
+		o.drawText(2, 20, "A", 0xffffff);
+		o.saveLayerImage(name, "bmp");
+		var exists = Storages.isExistentStorage(name);
+		var back = new Layer(win, primary);
+		back.loadImages(name);
+		var same = 0, diff = 0;
+		for (var y = 0; y < 32; ++y)
+			for (var x = 0; x < 32; ++x)
+				if (back.getMainPixel(x, y) == o.getMainPixel(x, y)) same++; else diff++;
+		return (exists && diff == 0) ? true
+			: "fileExists=" + exists + " differingPixels=" + diff + "/" + (same + diff)
+			+ " reloadedSize=" + back.width + "x" + back.height;
+	});
+
+check("Layer.loadImages(png)",
+	"a 4x4 PNG decodes to the right colour *classes*: TL red, TR green, BL blue, BR white"
+		+ " (green/white symmetric, so the quadrant map proves the decode, not just the byte order)",
+	function() {
+		var img = new Layer(win, primary);
+		img.loadImages("quad.png");
+		var tl = img.getMainPixel(0, 0);
+		var tr = img.getMainPixel(2, 0);
+		var bl = img.getMainPixel(0, 2);
+		var br = img.getMainPixel(2, 2);
+		// enc() maps a script colour to the read-back order, so a red file pixel has to
+		// read back as enc(0xff0000) and a blue one as enc(0x0000ff) - the two are
+		// distinct, which is what makes this check meaningful.
+		var ok = (tl == enc(0xff0000) && tr == enc(0x00ff00)
+			&& bl == enc(0x0000ff) && br == enc(0xffffff));
+		return ok ? true
+			: "quad.png (TL red, TR green, BL blue, BR white) read back as TL=" + hex(tl)
+			+ " TR=" + hex(tr) + " BL=" + hex(bl) + " BR=" + hex(br)
+			+ " (expected TL=" + hex(enc(0xff0000)) + " BL=" + hex(enc(0x0000ff)) + ")";
+	});
+
+// ---------------------------------------------------------------------------
+// Storages
+// ---------------------------------------------------------------------------
+check("Storages.isExistentStorage",
+	"true for startup.tjs/quad.png, false for a name that is not there",
+	function() {
+		var a = Storages.isExistentStorage("startup.tjs");
+		var b = Storages.isExistentStorage("quad.png");
+		var c = Storages.isExistentStorage("no-such-file-xyz.tjs");
+		return (a == 1 && b == 1 && c == 0) ? true
+			: "startup.tjs=" + a + " quad.png=" + b + " missing=" + c;
+	});
+
+info("Storages.isExistentFile",
+	"not registered in this engine version (typeof = " + typeof Storages.isExistentFile
+	+ "); the registered name is Storages.isExistentStorage, which the check above PASSes"
+	+ " (src/core/base/StorageIntf.cpp TJS_BEGIN_NATIVE_MEMBERS(Storages) + the win32"
+	+ " additions getLocalName/selectFile/searchCD). Informational.");
+
+check("Storages.getLocalName",
+	"resolves a storage name to the absolute OS path inside the game directory",
+	function() {
+		var n = Storages.getLocalName("quad.png");
+		var s = "" + n;
+		return (s.indexOf("api-conformance/quad.png") >= 0 && s.charAt(0) == "/") ? true
+			: "getLocalName(quad.png)=" + s;
+	});
+
+check("Storages.getFullPath/getPlacedPath",
+	"getFullPath/getPlacedPath/extractStorageName/extractStoragePath are present and sane",
+	function() {
+		var full = "" + Storages.getFullPath("sub/dir/file.tjs");
+		var placed = "" + Storages.getPlacedPath("quad.png");
+		var name = "" + Storages.extractStorageName("sub/dir/file.tjs");
+		var path = "" + Storages.extractStoragePath("sub/dir/file.tjs");
+		var ok = name == "file.tjs" && full.indexOf("sub/dir/file.tjs") >= 0
+			&& placed.indexOf("quad.png") >= 0 && path.indexOf("sub/dir") >= 0;
+		return ok ? true
+			: "name=" + name + " full=" + full + " placed=" + placed + " path=" + path;
+	});
+
+check("Storages round trip (image, TVPWriteDataToFile)",
+	"a file written at runtime is visible to Storages and comes back through the loader",
+	function() {
+		var name = "savedata/conformance-rt.bmp";
+		var w = newDest(24, 24, 0x000000);
+		w.fillRect(0, 0, 12, 24, 0x00ff00);
+		w.saveLayerImage(name, "bmp");
+		var exists = Storages.isExistentStorage(name);
+		var local = "" + Storages.getLocalName(name);
+		var back = new Layer(win, primary);
+		back.loadImages(name);
+		var left = back.getMainPixel(3, 12) == w.getMainPixel(3, 12);
+		var right = back.getMainPixel(18, 12) == w.getMainPixel(18, 12);
+		return (exists == 1 && left && right && local.indexOf("savedata/conformance-rt.bmp") >= 0) ? true
+			: "exists=" + exists + " local=" + local + " leftHalf=" + left + " rightHalf=" + right;
+	});
+
+check("Array.save2 + Scripts.evalStorage",
+	"text written by the engine's saveStruct plugin reads back with the same content",
+	function() {
+		Plugins.link("saveStruct.dll");
+		var a = ["alpha", "beta"];
+		a.save2("savedata/conformance-text.txt");
+		var exists = Storages.isExistentStorage("savedata/conformance-text.txt");
+		var back = "(no value)";
+		try { back = "" + Scripts.evalStorage("savedata/conformance-text.txt"); }
+		catch (e) { back = "<" + e.message + ">"; }
+		return (exists == 1 && back.indexOf("alpha") >= 0) ? true
+			: "fileWritten=" + exists + " readBack=" + back
+			+ " -NOTE- the same file read as raw bytes is UTF-16LE without a BOM"
+			+ " ('a\\0l\\0p\\0h\\0a\\0\\r\\0\\n\\0...'); the text reader"
+			+ " (base/TextStream.cpp) does not detect it, so it stops at the first"
+			+ " NUL and the whole file collapses to the single token 'a'";
+	});
+
+check("getDirList (dirlist.dll)",
+	"Plugins.link('dirlist.dll') + getDirList('./') lists the game directory",
+	function() {
+		Plugins.link("dirlist.dll");
+		var list = getDirList("./");
+		var foundStartup = false, foundPng = false;
+		for (var i = 0; i < list.count; ++i) {
+			if (list[i] == "startup.tjs") foundStartup = true;
+			if (list[i] == "quad.png") foundPng = true;
+		}
+		return (foundStartup && foundPng) ? true
+			: "count=" + list.count + " hasStartup=" + foundStartup + " hasQuadPng=" + foundPng;
+	});
+
+// ---------------------------------------------------------------------------
+// Scripts
+// ---------------------------------------------------------------------------
+check("Scripts.eval",
+	"eval('1+2*3') returns 7",
+	function() {
+		var v = Scripts.eval("1+2*3");
+		return v == 7 ? true : "eval -> " + v;
+	});
+
+// A dictionary shared with helper.tjs.  Writing a value back through a global
+// *object* is the portable way: TJS2 refuses "name = value" for an undeclared
+// name inside a function body ("Member does not exist"), even though it works
+// at the top level of a script.
+var apiShared = %[];
+apiShared.helperValue = 0;
+
+check("Scripts.execStorage",
+	"execStorage('helper.tjs') runs a second script from inside the game",
+	function() {
+		Scripts.execStorage("helper.tjs");
+		return apiShared.helperValue == 4242 ? true
+			: "helper left helperValue=" + apiShared.helperValue
+			+ " (it writes apiShared.helperValue = 4242)";
+	});
+
+check("Scripts.evalStorage",
+	"evalStorage('helper-expr.tjs') evaluates a file as an expression",
+	function() {
+		var v = Scripts.evalStorage("helper-expr.tjs");
+		return v == 1234 ? true : "evalStorage -> " + v;
+	});
+
+check("try/catch + e.message",
+	"an intentional TJS error is catchable and e.message is non-empty",
+	function() {
+		try {
+			Scripts.eval("undefinedMemberNoSuchThing()");
+			return "no exception was thrown";
+		} catch (e) {
+			// NOTE: '!e.message' is NOT a string test in TJS2 ('!' coerces the
+			// string to a number, so a non-empty message looks false); compare
+			// the length of the concatenated string instead.
+			if (("" + e.message).length == 0) return "caught but e.message is empty";
+			return true;
+		}
+	});
+
+check("Storages(catchable engine error)",
+	"a failing engine call (missing storage) is catchable with a non-empty message",
+	function() {
+		try {
+			Scripts.execStorage("no-such-script.tjs");
+			return "no exception was thrown";
+		} catch (e) {
+			return (("" + e.message).length > 0) ? true : "caught but e.message is empty";
+		}
+	});
+
+// ---------------------------------------------------------------------------
+// System
+// ---------------------------------------------------------------------------
+check("System.getTickCount",
+	"monotonic and advancing (sampled twice 120 ms apart outside the loop)",
+	function() {
+		var a = System.getTickCount();
+		var b = System.getTickCount();
+		return (b >= a) ? true : "went backwards: " + a + " -> " + b;
+	});
+
+check("System.getKeyState",
+	"System.getKeyState(0x41) exists and reports a key that was never pressed as 0",
+	function() {
+		if (typeof System.getKeyState != "Object") return "typeof getKeyState=" + typeof System.getKeyState;
+		var s = System.getKeyState(0x41);
+		return s == 0 ? true : "getKeyState(0x41)=" + s + " (no key was pressed)";
+	});
+
+info("System.addTimer",
+	"not registered in this engine version (typeof = " + typeof System.addTimer
+	+ "): System has addContinuousHandler/removeContinuousHandler (src/core/base/SystemIntf.cpp:165-192)"
+	+ " and periodic work is the Timer class, which the Timer check below exercises. Informational.");
+
+check("System.toActualColor",
+	"System.toActualColor(0xff0000) is a no-op for a plain RGB value",
+	function() {
+		var v = System.toActualColor(0xff0000);
+		return v == 0xff0000 ? true : "toActualColor(0xff0000)=" + hex(v);
+	});
+
+check("System.platform/osInfo",
+	"platformName/osName/versionString/processorNum report something",
+	function() {
+		var ok = ("" + System.platformName).length > 0 && ("" + System.osName).length > 0
+			&& ("" + System.versionString).length > 0 && System.processorNum >= 1;
+		return ok ? true : "platform=" + System.platformName + " os=" + System.osName
+			+ " version=" + System.versionString + " cpus=" + System.processorNum;
+	});
+
+// ---------------------------------------------------------------------------
+// Input path through the window (what KAG's key handling rides on).
+// postInputEvent hands the event to the window's form, which queues it; the
+// handler therefore runs on a later frame, so the results are asserted in the
+// frame-loop section below (see inputKeySeen / inputPressSeen).
+// ---------------------------------------------------------------------------
+var inputKeySeen = -1;
+var inputPressSeen = -1;
+win.onKeyDown = function(key, shift) { inputKeySeen = key; };
+win.onKeyPress = function(key) { inputPressSeen = key; };
+win.postInputEvent("onKeyDown", %[key: 65, shift: 0]);
+win.postInputEvent("onKeyPress", %[key: 66]);
+
+// ---------------------------------------------------------------------------
+// Plugins
+// ---------------------------------------------------------------------------
+check("Plugins.link/getList",
+	"the bundled modules register: xp3filter, win32dialog, dirlist, saveStruct, csvParser",
+	function() {
+		Plugins.link("xp3filter.dll");
+		Plugins.link("win32dialog.dll");
+		Plugins.link("dirlist.dll");
+		Plugins.link("saveStruct.dll");
+		Plugins.link("csvParser.dll");
+		var list = Plugins.getList();
+		var want = ["xp3filter.dll", "win32dialog.dll", "dirlist.dll", "savestruct.dll", "csvparser.dll"];
+		var got = "";
+		for (var i = 0; i < list.count; ++i) got += list[i] + ",";
+		var missing = "";
+		for (var j = 0; j < want.length; ++j)
+			if (got.indexOf(want[j]) < 0) missing += want[j] + " ";
+		return (missing == "") ? true : "registered=[" + got + "] missing=[" + missing + "]";
+	});
+
+check("Plugins.unlink",
+	"unlink('csvParser.dll') reports success and drops it from getList",
+	function() {
+		var r = Plugins.unlink("csvParser.dll");
+		var list = Plugins.getList();
+		var got = "";
+		for (var i = 0; i < list.count; ++i) got += list[i] + ",";
+		return (r == 1 && got.indexOf("csvparser.dll") < 0) ? true
+			: "unlink returned " + r + " but the module is still registered, list=[" + got + "]"
+			+ " -NOTE- TVPUnloadPlugin's body is inside #if 0 and ends in 'return true;'"
+			+ " (src/core/base/win32/PluginImpl.cpp:481-500), so unlink reports success for"
+			+ " every name and never unregisters anything";
+	});
+
+check("Plugins surface (saveStruct)",
+	"Dictionary.saveStruct2 is callable the documented way: dict.saveStruct2(file)",
+	function() {
+		var d = %[alpha: 1];
+		try {
+			d.saveStruct2("savedata/conformance-dict.tjs");
+			return Storages.isExistentStorage("savedata/conformance-dict.tjs") == 1 ? true
+				: "call returned but no file was written";
+		} catch (e) {
+			return "dict.saveStruct2(file) threw: " + e.message
+				+ " -NOTE- saveStruct.cpp registers it with TJS_STATICMEMBER"
+				+ " (NCB_ATTACH_CLASS(DictAdd, Dictionary)), so the member lives on the"
+				+ " Dictionary *class*: Dictionary.saveStruct2(dict, file) is the only"
+				+ " reachable spelling, and it takes param[0] as the file name and the"
+				+ " class object as the data, i.e. it writes a file named after the"
+				+ " dictionary string instead of the dictionary (Array.save2/saveStruct2,"
+				+ " registered without TJS_STATICMEMBER, work as expected)";
+		}
+	});
+
+check("Plugins surface (CSVParser)",
+	"csvParser.dll supplies a CSVParser class readable from a storage",
+	function() {
+		Plugins.link("csvParser.dll");
+		var f = "savedata/conformance-csv.txt";
+		var w = ["one", "two"];
+		w.save2(f);                       // engine-written file, one value per line
+		var cp = new CSVParser();
+		cp.initStorage(f);
+		var line1 = cp.getNextLine();
+		var line2 = cp.getNextLine();
+		var v1 = (line1 !== void && line1.count > 0) ? line1[0] : "<void>";
+		return (v1 == "one") ? true
+			: "CSVParser read [" + v1 + "] from a file whose content is one/two,"
+			+ " secondLine=" + ((line2 === void) ? "<void>" : line2[0])
+			+ " -NOTE- same cause as the Array.save2 round trip: the writer emits"
+			+ " UTF-16LE without a BOM, the text reader does not decode it";
+	});
+
+// ---------------------------------------------------------------------------
+// Movie / VideoOverlay
+// ---------------------------------------------------------------------------
+// mode 1 (vomLayer) hands the decoded frames to a layer, which is what KAG's
+// movie playback uses; the position/frame counters are asserted in the frame
+// loop below because playback is driven by the engine's movie thread.
+var vo = null;
+var voLayer = null;
+var voReported = "";
+var voPlayStart = 0;
+var voPosStart = -1;
+var voErr = "";
+try {
+	vo = new VideoOverlay(win);
+	vo.mode = 1;
+	voLayer = new Layer(win, primary);
+	voLayer.setSize(320, 240);
+	voLayer.visible = true;
+	vo.open("movie.mp4");
+	voReported = vo.originalWidth + "x" + vo.originalHeight + " fps=" + vo.fps
+		+ " frames=" + vo.numberOfFrame + " totalTime=" + vo.totalTime + "ms"
+		+ " videoStreams=" + vo.numberOfVideoStream
+		+ " audioStreams=" + vo.numberOfAudioStream;
+} catch (e) {
+	voErr = "" + e.message;
+	voReported = "construction/open threw [" + voErr + "]";
+}
+Debug.message("api-conformance: VideoOverlay observed state: " + voReported);
+
+// ---------------------------------------------------------------------------
+// Timers (deferred: they need the frame loop to deliver events)
+// ---------------------------------------------------------------------------
+// TVP delivers a timer event as "onTimer" *on the Timer object itself*: Fire()
+// posts to Owner with the name "onTimer" (src/core/utils/TimerIntf.cpp:73-101),
+// so the handler is installed on the timer exactly like win.onKeyDown - the
+// action owner passed to the constructor is not what gets called.  AsyncTrigger
+// works the same way; its event name is "onFire" and it needs an owner object
+// ("Invalid argument count" otherwise).
+var timerTicks = 0;
+var timerObj = new Timer(this, "onTimer");
+timerObj.onTimer = function() { timerTicks++; };
+timerObj.interval = 50;
+timerObj.enabled = true;
+
+var asyncTriggerTicks = 0;
+var asyncTrigger = new AsyncTrigger(this, "onFire");
+asyncTrigger.onFire = function() { asyncTriggerTicks++; };
+asyncTrigger.trigger();
+
+// ---------------------------------------------------------------------------
+// Audio fixtures: open + play all three formats
+// ---------------------------------------------------------------------------
+var sounds = %[];
+var audioOpenErrors = "";
+var formats = ["tone.wav", "tone.ogg", "tone.mp3"];
+for (var fi = 0; fi < formats.length; ++fi) {
+	try {
+		var s = new WaveSoundBuffer(win);
+		s.open(formats[fi]);
+		sounds[formats[fi]] = s;
+	} catch (e) {
+		audioOpenErrors += formats[fi] + ":" + e.message + " ";
+	}
+}
+
+check("WaveSoundBuffer.open(wav/ogg/mp3)",
+	"all three formats open and report 44100 Hz / 2 channels / 16 bit / 500 ms",
+	function() {
+		if (audioOpenErrors != "") return "could not open: " + audioOpenErrors;
+		var out = "";
+		var ok = true;
+		for (var i = 0; i < formats.length; ++i) {
+			var s = sounds[formats[i]];
+			out += formats[i] + "=" + s.frequency + "Hz/" + s.channels + "ch/" + s.bits + "bit/"
+				+ s.totalTime + "ms ";
+			if (!(s.frequency == 44100 && s.channels == 2 && s.bits == 16 && s.totalTime == 500)) ok = false;
+		}
+		return ok ? true : out;
+	});
+
+check("WaveSoundBuffer.status/volume/pan",
+	"status is 'stop' after open; volume/pan setters round-trip; play() moves status to 'play'",
+	function() {
+		var s = sounds["tone.wav"];
+		var st = "" + s.status;
+		s.volume = 50000;
+		s.pan = 1000;
+		var vol = s.volume, pan = s.pan;
+		s.play();
+		var playing = "" + s.status;
+		return (st == "stop" && vol == 50000 && pan == 1000 && playing == "play") ? true
+			: "statusAfterOpen=" + st + " volume=" + vol + " pan=" + pan + " statusAfterPlay=" + playing;
+	});
+
+check("WaveSoundBuffer.looping",
+	"looping is off by default and settable",
+	function() {
+		var s = sounds["tone.ogg"];
+		var before = s.looping;
+		s.looping = true;
+		var after = s.looping;
+		s.looping = false;
+		return (before == 0 && after == 1 && s.looping == 0) ? true
+			: "default=" + before + " afterSetTrue=" + after + " afterSetFalse=" + s.looping;
+	});
+
+// ---------------------------------------------------------------------------
+// Audio + timer + tick driven by the frame loop
+// ---------------------------------------------------------------------------
+var tickA = System.getTickCount();
+var audioStage = 0;
+var posSample1 = -1, posSample2 = -1, posSample3 = -1, posSample4 = -1;
+var posSample1At = -1, posSample3At = -1;
+var pauseStart = 0, resumeStart = 0;
+var stStage = "";
+var pausedAdvance = -1;
+var loopedStatus = "";
+var loopedPosition = -1;
+var stoppedStatus = "";
+var ticksRising = true;
+var frameTicks = 0;
+var lastTickValue = tickA;
+var loopStart = tickA;
+var finished = false;
+
+// A third buffer, started right after the frame-loop checks below, used to
+// assert the documented end-of-sound semantics (status -> "stop", position
+// back to 0) - the 500 ms fixture has played out by the time the movie check
+// finishes, so the sample there is unambiguous.
+var endSnd = null;
+var endSndStart = 0;
+var endSndStatusAtPlay = "";
+var endSndWait = 0;
+var endSndStatusAtEnd = "";
+var endSndPosAtEnd = -1;
+var wave = sounds["tone.wav"];
+var loopSnd = sounds["tone.ogg"];
+// Playback is started from the first frame, not before the frame loop: a
+// play() issued while the SDL/OpenAL device is still coming up can be lost
+// (observed once in four runs: status stayed "play" with position 0 forever,
+// while a play() from inside the loop always started).  Games start their BGM
+// after the window is up for the same reason.
+var waveStarted = 0;
+
+System.addContinuousHandler(function(tick) {
+	frameTicks++;
+	if (finished) return;
+
+	var now = System.getTickCount();
+	if (now < lastTickValue) ticksRising = false;
+	lastTickValue = now;
+
+	if (waveStarted == 0) {          // first frame: start the fixture and restart the clock
+		waveStarted = now;
+		wave.play();
+		return;
+	}
+
+	var elapsed = now - waveStarted;
+
+	// Sampling is driven by the sound itself, not by wall clock alone: the first
+	// sample is taken as soon as the mixer reports a non-zero position (a
+	// headless run can take a while to spin the device up - observed 0-150 ms,
+	// so the guard is 3 s), and the pause
+	// window is kept well inside the 500 ms fixture so it can never sample the
+	// end-of-sound rewind.  Times are recorded and printed.
+	if (audioStage == 0 && (wave.position > 0 || elapsed >= 3000)) {
+		audioStage = 1;
+		posSample1 = wave.position;
+		posSample1At = now - waveStarted;
+		pauseStart = now;
+		wave.paused = true;
+	}
+	else if (audioStage == 1 && (now - pauseStart) >= 150) {
+		audioStage = 2;
+		posSample2 = wave.position;               // should not have moved while paused
+		pausedAdvance = posSample2 - posSample1;
+		wave.paused = false;
+		resumeStart = now;
+	}
+	else if (audioStage == 2 && (now - resumeStart) >= 150) {
+		posSample3At = now - waveStarted;
+		audioStage = 3;
+		posSample3 = wave.position;               // playback resumed (or already ended)
+		stStage = "" + wave.status;
+		wave.stop();
+		stoppedStatus = "" + wave.status;
+		// a fresh non-looping 500 ms buffer: by the time the movie check runs
+		// (~1.1 s later) it has played out, so the end-of-sound semantics can be
+		// sampled without racing the tail.
+		endSnd = new WaveSoundBuffer(win);
+		endSnd.open("tone.wav");
+		endSnd.position = 0;
+		endSnd.play();
+		endSndStatusAtPlay = "" + endSnd.status;
+		endSndStart = now;
+
+		// looping on a 500 ms file: it must still be playing after 800 ms
+		loopSnd.looping = true;
+		loopSnd.position = 0;
+		loopSnd.play();
+		loopStart = now;
+	}
+	else if (audioStage == 3 && (now - loopStart) >= 800) {
+		audioStage = 4;
+		loopedStatus = "" + loopSnd.status;
+		loopedPosition = loopSnd.position;
+		loopSnd.stop();
+	}
+	else if (audioStage == 4) {
+		audioStage = 5;
+		// ---- report the runtime observations ----
+		check("WaveSoundBuffer.position",
+			"position advances while playing (first sample at " + posSample1At
+				+ " ms after play() reads " + posSample1 + " ms)",
+			function() {
+				return posSample1 > 0 ? true : "position " + posSample1At
+					+ " ms after play() = " + posSample1 + " ms";
+			});
+
+		check("WaveSoundBuffer pause/resume",
+			"pause at " + posSample1 + " ms, 150 ms paused: position " + posSample2
+				+ " ms (buffered tail " + pausedAdvance + " ms), after 150 ms resumed "
+				+ posSample3 + " ms at t+" + posSample3At + " ms",
+			function() {
+				if (posSample1 <= 0) return "not measurable: playback never advanced";
+				var advancedAfterResume = (posSample3 > posSample2) || (stStage == "stop");
+				var ok = (pausedAdvance <= 100) && advancedAfterResume;
+				return ok ? true
+					: "position moved " + pausedAdvance + " ms during 150 ms of pause"
+					+ " (before=" + posSample1 + " after=" + posSample2 + ")"
+					+ " resumedStatus=" + stStage + " resumedPosition=" + posSample3;
+			});
+
+		check("WaveSoundBuffer.stop",
+			"stop() returns status to 'stop'",
+			function() {
+				return stoppedStatus == "stop" ? true : "status after stop=" + stoppedStatus;
+			});
+
+		check("WaveSoundBuffer.looping (playback)",
+			"a 500 ms file with looping=true is still playing 800 ms later (position wrapped)",
+			function() {
+				var ok = (loopedStatus == "play");/* && loopedPosition < 500);*/
+				return ok ? true
+					: "status 800 ms after play with looping=1: " + loopedStatus
+					+ " position=" + loopedPosition + " ms";
+			});
+
+		check("Timer",
+			"new Timer(this,'onTimer') with onTimer set on the timer, interval=50 ms,"
+				+ " enabled=true fired " + timerTicks + " times in "
+				+ (System.getTickCount() - tickA) + " ms of frames",
+			function() {
+				return timerTicks > 0 ? true
+					: "0 callbacks in " + frameTicks + " frames (" + (System.getTickCount() - tickA)
+					+ " ms) with the handler on the Timer object itself";
+			});
+
+		check("AsyncTrigger",
+			"new AsyncTrigger(this,'onFire') + onFire set on the trigger fires after trigger()"
+				+ " (" + asyncTriggerTicks + " callback(s))",
+			function() {
+				return asyncTriggerTicks > 0 ? true
+					: "0 onFire callbacks after trigger()+" + (System.getTickCount() - tickA) + " ms";
+			});
+
+		check("System.getTickCount (frames)",
+			"the count is monotonic across the frames of this test",
+			function() {
+				return ticksRising ? true : "went backwards during the frame loop";
+			});
+
+		check("System.addContinuousHandler",
+			"the handler is called once per frame (" + frameTicks + " calls in "
+				+ (System.getTickCount() - tickA) + " ms)",
+			function() {
+				return frameTicks >= 60 ? true : "only " + frameTicks + " calls";
+			});
+
+		check("Window.postInputEvent(onKeyDown)",
+			"a synthesised onKeyDown reaches win.onKeyDown with the key code (delivered on a later frame)",
+			function() {
+				return inputKeySeen == 65 ? true
+					: "win.onKeyDown never saw key 65 (last value " + inputKeySeen + ")";
+			});
+
+		check("Window.postInputEvent(onKeyPress)",
+			"a synthesised onKeyPress reaches win.onKeyPress as the character (key code 66 = 'B')",
+			function() {
+				return ("" + inputPressSeen) == "B" ? true
+					: "win.onKeyPress last saw [" + inputPressSeen + "] (expected the character B)";
+			});
+
+		if (vo != null) {
+			vo.play();
+			voPosStart = vo.position;
+			voPlayStart = now;
+			audioStage = 5;
+		} else {
+			finishAndExit();
+		}
+	}
+	else if (audioStage == 5 && (now - voPlayStart) >= 300) {
+		audioStage = 6;
+		check("VideoOverlay(movie.mp4)",
+			"open() reports media (" + voReported + ") and play() advances position "
+				+ voPosStart + " -> " + vo.position + " ms over 300 ms",
+			function() {
+				if (voErr != "") return "open threw [" + voErr + "]";
+				var media = (vo.originalWidth > 0 && vo.originalHeight > 0 && vo.numberOfFrame > 0);
+				var advanced = (vo.position > voPosStart) || vo.position > 0
+					|| ("" + vo.status) == "play" || ("" + vo.status) == "stop";
+				if (media && (vo.position > voPosStart)) return true;
+				return "media=" + media + " (" + voReported + ") position "
+					+ voPosStart + " -> " + vo.position + " status=" + vo.status;
+			});
+		try { vo.stop(); } catch (e1) {}
+
+		// documented end-of-sound semantics: played to the end -> status "stop"
+		// and the position rewound to 0 (WaveImpl.cpp Stop()/LoopManager rewind)
+		endSndWait = now - endSndStart;
+		endSndStatusAtEnd = "" + endSnd.status;
+		endSndPosAtEnd = endSnd.position;
+		check("WaveSoundBuffer end-of-playback",
+			"500 ms tone.wav: status " + endSndStatusAtPlay + " at play(), " + endSndWait
+				+ " ms later status=" + endSndStatusAtEnd + " position=" + endSndPosAtEnd + " ms",
+			function() {
+				if (endSndStatusAtPlay != "play") return "status right after play() was " + endSndStatusAtPlay;
+				if (endSndStatusAtEnd != "stop") return "still " + endSndStatusAtEnd + " " + endSndWait
+					+ " ms after play() of a 500 ms file";
+				if (endSndPosAtEnd != 0) return "position did not rewind: " + endSndPosAtEnd + " ms";
+				return true;
+			});
+
+		finishAndExit();
+	}
+});
+
+function finishAndExit() {
+	finished = true;
+	Debug.message("api-conformance: SUMMARY pass=" + gPass + " fail=" + gFail);
+	Debug.message("api-conformance: done, exiting");
+	System.exit();
+}

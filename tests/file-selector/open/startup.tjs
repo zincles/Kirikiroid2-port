@@ -1,0 +1,50 @@
+// Kirikiroid2 SDL2 port - file selector test game (open mode).
+//
+// Run with:  ./build/krkr2 tests/file-selector/open
+//
+// Wired API: Storages.selectFile(dictionary).  TVPSelectFile()
+// (base/win32/FileSelector.cpp) reads these members:
+//
+//   title       caption of the dialog
+//   name        file name (save mode) or filter pattern (open mode); a name
+//               that carries a path is split into the initial directory and
+//               the filter, exactly as the Win32 selector does
+//   initialDir  the directory to browse first (a storage name)
+//   save        false = open, true = save
+//   defaultExt  extension appended when the typed name has none (engine side)
+//
+// The method returns 1 when something was selected and 0 when the user
+// cancelled; the chosen path is written back into d.name as a storage name.
+//
+// A filter pattern with a path in front of it is the portable way to say
+// "start in this directory": the engine normalizes "./fixtures/*.xp3" against
+// the game's own path and hands the selector
+// initialdir=<game>/fixtures, filename="*.xp3".
+
+Debug.message("filesel-test: open mode start");
+
+// 1st call: pick a game archive from the fixtures directory.
+var d = new Dictionary();
+d.title = "Open a game archive";
+d.name = "./fixtures/*.xp3";
+d.save = false;
+var ok1 = Storages.selectFile(d);
+Debug.message("filesel-test: call 1 returned " + ok1 + " name=" + d.name);
+
+// 2nd call: the engine calls the selector repeatedly, so the dialog has to
+// come up again -- without leaking textures or SDL text-input state.
+var d2 = new Dictionary();
+d2.title = "Pick it again";
+d2.name = "./fixtures/*.xp3";
+d2.save = false;
+var ok2 = Storages.selectFile(d2);
+Debug.message("filesel-test: call 2 returned " + ok2 + " name=" + d2.name);
+
+// The chosen path has to be usable as a game path.
+if (d.name != "") {
+	Debug.message("filesel-test: chosen file exists = "
+		+ Storages.isExistentStorage(d.name));
+}
+
+Debug.message("filesel-test: done");
+System.exit();

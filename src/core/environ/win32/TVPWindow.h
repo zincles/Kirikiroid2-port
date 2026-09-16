@@ -313,9 +313,6 @@ enum {
 	orientLandscape,
 };
 
-namespace cocos2d {
-	class Node;
-}
 
 class iWindowLayer {
 protected:
@@ -326,6 +323,7 @@ protected:
 	double TouchScaleThreshold = 5, TouchRotateThreshold = 5;
 
 public:
+	virtual ~iWindowLayer() {} // deleting through the interface requires a virtual destructor
 	virtual void SetPaintBoxSize(tjs_int w, tjs_int h) = 0;
 	virtual bool GetFormEnabled() = 0;
 	virtual void SetDefaultMouseCursor() = 0;
@@ -374,7 +372,7 @@ public:
 	virtual void ResetTouchVelocity(tjs_int id) = 0;
 	virtual bool GetMouseVelocity(float& x, float& y, float& speed) const = 0;
 	virtual void TickBeat() = 0;
-	virtual cocos2d::Node *GetPrimaryArea() = 0;
+	// GetPrimaryArea() removed: it returned a cocos2d::Node* for the Android UI layer.
 
 	void SetZoomNumer(tjs_int n) { SetZoom(n, ZoomDenom); }
 	tjs_int GetZoomNumer() const { return ZoomNumer; }
@@ -397,7 +395,7 @@ public:
 	void SetPosition(tjs_int, tjs_int) {}
 	void SetBorderStyle(tTVPBorderStyle) {}
 	void SetStayOnTop(bool) {}
-	void SetFullScreenMode(bool) {}
+	virtual void SetFullScreenMode(bool) {}
 	tjs_int GetLeft() { return 0; }
 	tjs_int GetTop() { return 0; }
 	tjs_int GetMinWidth() { return 0; }
@@ -407,12 +405,12 @@ public:
 	tjs_int GetInnerWidth() { return GetWidth(); }
 	tjs_int GetInnerHeight() { return GetHeight(); }
 	bool GetStayOnTop() { return false; }
-	bool GetFullScreenMode() { return false; }
+	virtual bool GetFullScreenMode() { return false; }
 	tTVPBorderStyle GetBorderStyle() const { return bsNone; }
 	void SetTrapKey(bool b) {}
 	bool GetTrapKey() const { return false; }
 	void RemoveMaskRegion() {}
-	void SetMouseCursorState(tTVPMouseCursorState mcs) { MouseCursorState = mcs; }
+	virtual void SetMouseCursorState(tTVPMouseCursorState mcs) { MouseCursorState = mcs; }
 	tTVPMouseCursorState GetMouseCursorState() const { return MouseCursorState; }
 	void HideMouseCursor() { }
 	void SetFocusable(bool b) {}

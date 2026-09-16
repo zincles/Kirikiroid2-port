@@ -161,7 +161,7 @@ typedef struct
     int encrypted;
 #ifndef NOUNCRYPT
     unsigned long keys[3];     /* keys defining the pseudo-random sequence */
-    const unsigned long* pcrc_32_tab;
+    const z_crc_t* pcrc_32_tab;
 #endif
 
 } file_in_zip64_read_info_s;
@@ -1483,7 +1483,15 @@ extern int ZEXPORT unzOpenCurrentFile3 (unzFile file, int* method,
     if (s->pfile_in_zip_read != NULL)
         unzCloseCurrentFile(file);
 
-	return unzOpenData(file, &s->pfile_in_zip_read, method, level, raw, password);
+	/* unzOpenData() returns its handle through an opaque unzData (void*),
+	 * so collect it locally and only publish it on success. */
+	{
+		unzData data = NULL;
+		int err = unzOpenData(file, &data, method, level, raw, password);
+		if (err == UNZ_OK)
+			s->pfile_in_zip_read = data;
+		return err;
+	}
 }
 
 extern int ZEXPORT unzOpenData (unzFile file, unzData *data,
@@ -1625,6 +1633,7 @@ extern int ZEXPORT unzOpenData (unzFile file, unzData *data,
     if (password != NULL)
     {
         int i;
+        char source[12];
 		pfile_in_zip_read_info->pcrc_32_tab = get_crc_table();
 		init_keys(password,
 				  pfile_in_zip_read_info->keys,

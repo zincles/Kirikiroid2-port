@@ -14,13 +14,20 @@
 #include <errno.h>
 #include <clocale>
 #include <algorithm>
+#include <climits>
+#include <ctype.h>
+#include <limits.h>
+#include <string.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <math.h>
+#include <float.h>
 #ifdef __WIN32__
 #include <float.h>
 #define isfinite _finite
 #else
 #define isfinite std::isfinite
 #endif
-#define INTMAX_MAX		0x7fffffffffffffff
 #include <assert.h>
 
 /*
@@ -735,14 +742,6 @@ tjs_char *TJS_strrchr(const tjs_char *s, int c)
 	return ret;
 }
 
-#include <ctype.h>
-#include <limits.h>
-#include <string.h>
-#include <stdarg.h>
-//#include <inttypes.h>
-#include <stdint.h>
-#include <math.h>
-#include <float.h>
 
 /* Some useful macros */
 
@@ -750,6 +749,7 @@ tjs_char *TJS_strrchr(const tjs_char *s, int c)
 #define MIN(a,b) ((a)<(b) ? (a) : (b))
 #define CONCAT2(x,y) x ## y
 #define CONCAT(x,y) CONCAT2(x,y)
+#undef NL_ARGMAX
 #define NL_ARGMAX 9
 
 /* Convenient bit representation for modifier flags, which all fall
@@ -1364,25 +1364,41 @@ static void pop_arg(union arg *arg, int type, va_list *ap)
 
 struct _tFILE
 {
-    tjs_char *p;
+    tjs_char *p;   /* base address (also the read cursor used by strtox) */
+    tjs_char *end; /* one past the last writable element; NULL for read-only use */
+    size_t len;    /* characters written so far (snprintf counts past the bound) */
 };
 
 static void out(_tFILE *f, const tjs_char *s, size_t l)
 {
-    memcpy(f->p, s, l * sizeof(*f->p));
-    f->p += l;
+    /* Bounded output: f->len always counts every character, but only what fits
+       below f->end is stored (snprintf semantics).  f == NULL is printf_core's
+       measuring pass. */
+    if (!f) return;
+    if (f->end > f->p) {
+        size_t room = (size_t)(f->end - f->p);
+        if (f->len < room) {
+            size_t n = room - f->len;
+            if (n > l) n = l;
+            memcpy(f->p + f->len, s, n * sizeof(*f->p));
+        }
+    }
+    f->len += l;
 }
 
 static void pad(_tFILE *f, tjs_char c, int w, int l, int fl)
 {
+	/* pad[] holds tjs_char, so every size here is an element count: using
+	   sizeof(pad) (bytes) over-wrote the destination by sizeof(tjs_char). */
 	tjs_char pad[256];
 	if (fl & (LEFT_ADJ | ZERO_PAD) || l >= w) return;
 	l = w - l;
-    int n = l >sizeof pad / sizeof(pad[0])? sizeof pad / sizeof(pad[0]): l;
-    while(n--) pad[n] = c;
-	for (; l >= sizeof pad; l -= sizeof pad)
-		out(f, pad, sizeof pad / sizeof(pad[0]));
-	out(f, pad, l);
+	const size_t padn = sizeof pad / sizeof(pad[0]);
+	size_t n = (size_t)l < padn ? (size_t)l : padn;
+	while (n--) pad[n] = c;
+	size_t rem = (size_t)l;
+	while (rem >= padn) { out(f, pad, padn); rem -= padn; }
+	if (rem) out(f, pad, rem);
 }
 
 static const char xdigits[] = 
@@ -1478,7 +1494,8 @@ int signbit(long double x)
 
 static int fmt_fp(_tFILE *f, long double y, int w, int p, int fl, int t)
 {
-    uint32_t big[(LDBL_MAX_EXP+LDBL_MANT_DIG)/9+1];
+    uint32_t big[(LDBL_MANT_DIG+28)/29 + 1          /* mantissa expansion */
+                 + (LDBL_MAX_EXP+LDBL_MANT_DIG+28+8)/9]; /* exponent expansion */
     uint32_t *a, *d, *r, *z;
     int e2=0, e, i, j, l;
     tjs_char buf[9+LDBL_MANT_DIG/4], *s;
@@ -1544,6 +1561,8 @@ static int fmt_fp(_tFILE *f, long double y, int w, int p, int fl, int t)
             if (s-buf==1 && (y||p>0||(fl&ALT_FORM))) *s++='.';
         } while (y);
 
+        if (p > INT_MAX-2-(ebuf-estr)-pl)
+            return -1;
         if (p && s-buf-2 < p)
             l = (p+2) + (ebuf-estr);
         else
@@ -1578,8 +1597,8 @@ static int fmt_fp(_tFILE *f, long double y, int w, int p, int fl, int t)
             *d = x % 1000000000;
             carry = x / 1000000000;
         }
-        if (!z[-1] && z>a) z--;
         if (carry) *--a = carry;
+        while (z>a && !z[-1]) z--;
         e2-=sh;
     }
     while (e2<0) {
@@ -1613,12 +1632,13 @@ static int fmt_fp(_tFILE *f, long double y, int w, int p, int fl, int t)
         x = *d % i;
         /* Are there any significant digits past j? */
         if (x || d+1!=z) {
-            long double round = 0x1<<LDBL_MANT_DIG;
+            long double round = 2/LDBL_EPSILON;
             long double small;
-            if (*d/i & 1) round += 2;
-            if (x<i/2) small=0.5;
-            else if (x==i/2 && d+1==z) small=1.0;
-            else small=1.5;
+            if ((*d/i & 1) || (i==1000000000 && d>a && (d[-1]&1)))
+                round += 2;
+            if (x<i/2) small=0x0.8p0L;
+            else if (x==i/2 && d+1==z) small=0x1.0p0L;
+            else small=0x1.8p0L;
             if (pl && *prefix=='-') round*=-1, small*=-1;
             *d -= x;
             /* Decide whether to round by probing round+small */
@@ -1626,6 +1646,7 @@ static int fmt_fp(_tFILE *f, long double y, int w, int p, int fl, int t)
                 *d = *d + i;
                 while (*d > 999999999) {
                     *d--=0;
+                    if (d<a) *--a=0;
                     (*d)++;
                 }
                 if (d<a) a=d;
@@ -1929,15 +1950,25 @@ static int printf_core(_tFILE *f, const tjs_char *fmt, va_list *ap, union arg *n
 int _vsnprintf(tjs_char * s, size_t n, const tjs_char * fmt, va_list ap)
 {
     int r;
-    _tFILE f = {s };
-    
+    _tFILE f;
+    f.p = s;
+    f.end = n ? s + n - 1 : s;  /* snprintf keeps the last element for the NUL */
+    f.len = 0;
+
     int nl_type[NL_ARGMAX+1] = {0};
     union arg nl_arg[NL_ARGMAX+1];
-    unsigned char internal_buf[80], *saved_buf = 0;
-    va_list *pap = (va_list *)&ap;
-    r = printf_core(&f, fmt, pap, nl_arg, nl_type);
+
+    /* va_list is an array type on x86_64 (register-passed varargs), so it must
+       be copied into a local whose address printf_core may advance; this is what
+       musl's va_copy does.  Passing the address of the *parameter* instead only
+       works where va_list is a plain pointer, e.g. 32-bit ARM. */
+    va_list ap2;
+    va_copy(ap2, ap);
+    r = printf_core(&f, fmt, &ap2, nl_arg, nl_type);
+    va_end(ap2);
 
     /* Null-terminate, overwriting last char if dest buffer is full */
+    if (n) s[f.len < n ? f.len : n - 1] = 0;
     return r;
 }
 

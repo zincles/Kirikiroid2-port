@@ -1,0 +1,150 @@
+// ---------------------------------------------------------------------------
+// xp3filter.tjs -- XP3 extraction/content filter for the "krkr2-smoke-xor/1"
+// encrypted test archive.  See tests/make-xp3.py for the normative cipher
+// description (seed(), keystream_byte()) and tests/make-encrypted-game.py for
+// the fixture builder.
+//
+// The engine (src/core/base/XP3Archive.cpp) applies the *extraction* filter to
+// every buffer it reads out of an XP3 segment, after decompression:
+//
+//     filter(filehash, offset, buffer, buffersize, filename, ctx)
+//         filehash    u32 from the archive's 'adlr' chunk
+//         offset      absolute offset of buffer[0] in the *uncompressed* file
+//         buffer      CBinaryAccessor: buffer[i] read/write, buffer.xor(...),
+//                     buffer.count, buffer.ptr
+//         buffersize  number of bytes in buffer
+//         filename    in-archive name, as stored (lower case, '/' separated)
+//         ctx         the value the content filter returned for this file,
+//                     kept in the stream's filter context
+//
+// and the *content* filter once per opened in-archive stream, before any data
+// is read:
+//
+//     content(filepath, archivename, filesize) -> [action, ctx]
+//         action 0 = read normally; 1 = pre-read the whole file into memory
+//
+// The xp3filter plugin (src/plugins/xp3filter.cpp, NCB_POST_REGIST_CALLBACK ->
+// PostRegistCallback) reads this file from "<app path>/xp3filter.tjs" and
+// executes it in a private TJS engine (only Debug/System/Storages exist there);
+// the two filter entry points are installed *after* that read, so this file
+// itself is always read as plain text and must be stored unencrypted, next to
+// the game.
+//
+// TJS2 details this file has to respect, all verified on this build:
+//   * callbacks must be *top level* declarations -- TJS2 does not put a named
+//     `function f() {}` declared inside another function body into that body's
+//     scope (the call then fails with `Member "f" does not exist`);
+//   * strings have no charCodeAt() (`"AZ".charAt(0)` is the *string* "A"), so
+//     character codes come from indexOf() on a literal alphabet;
+//   * dictionaries are the `%[]` literal (`{}` is a block, a syntax error in
+//     expression position).
+// ---------------------------------------------------------------------------
+Debug.message("xp3filter: script loaded by the plugin");
+
+// Printable ASCII (0x20..0x7e) as a literal; characters outside it contribute
+// -1, so file names are expected to be printable ASCII (all fixture names
+// are).  make-encrypted-game.py checks this literal against the Python side.
+var xp3Alpha = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+
+// xp3NameSeed(name): 8-bit per-file key seed, mirrored by name_seed() in
+// tests/make-xp3.py over the lower-cased in-archive name -- exactly the string
+// the engine passes as `filename` / `filepath`.
+function xp3NameSeed(name) {
+	var n = name.toLowerCase();
+	var h = 0;
+	for (var i = 0; i < n.length; ++i) {
+		var c = xp3Alpha.indexOf(n.charAt(i));
+		if (c >= 0) c += 0x20;
+		h = (h * 31 + c) & 0xFFFFFF;
+	}
+	return (h ^ (h >> 8) ^ (h >> 16)) & 0xFF;
+}
+
+// xp3KeyByte(pos, seed): keystream byte for absolute file position `pos`.
+function xp3KeyByte(pos, seed) {
+	var v = (pos * 0x9D + seed * 0x2B + 0x5A) & 0xFF;
+	var r = pos & 7;
+	v = ((v << r) | (v >> (8 - r))) & 0xFF;
+	return v ^ ((pos >> 3) & 0xFF);
+}
+
+// Extraction filter: XOR the buffer with this file's keystream.
+//
+// While decoding, it also accumulates a checksum of the *decoded* bytes of
+// each file (s1/s2, mirrored in make-encrypted-game.py) and logs one line per
+// file it saw completely, from offset 0 to the end:
+//
+//     xp3filter: tone.wav decoded 88244 bytes, checksum=104693597
+//
+// The callers read files in whatever chunks and order they like (the WAV
+// decoder reads 4/2-byte header fields, then 22048-byte blocks, and re-reads
+// offset 36), so `have` tracks the checksummed prefix: bytes at a buffer head
+// that were already checksummed are skipped, and a read that starts past the
+// prefix disables the check for that file (it never guesses).  These lines are
+// the byte-level proof that the engine read back exactly the original file --
+// including offsets past the first read and multi-chunk reads.
+var xp3Have = %[];
+var xp3S1 = %[];
+var xp3S2 = %[];
+
+function xp3Decode(filehash, offset, buffer, buffersize, filename, ctx) {
+	var seed = -1;
+	var size = -1;
+	if (ctx === void || ctx === null) {
+		// No content filter ran for this stream (the content filter is
+		// optional in the engine); fall back to the name we were given.
+		seed = xp3NameSeed(filename);
+	} else {
+		seed = ctx[0];
+		size = ctx[1];
+	}
+	// Self-check: the per-file key must have arrived through the filter
+	// context and must be the one this file was encrypted with.  A silent
+	// mismatch would "work" by producing garbage, so fail loudly instead.
+	if (seed !== xp3NameSeed(filename)) {
+		throw new Error("xp3filter: per-file key mismatch for " + filename
+			+ " (ctx seed=" + seed + ", expected=" + xp3NameSeed(filename) + ")");
+	}
+
+	var have = xp3Have[filename];
+	if (have === void) have = 0;
+	var check = have >= 0 && offset <= have;
+	if (!check) have = -1;
+	var skip = check && offset < have ? have - offset : 0;
+	var s1 = xp3S1[filename]; if (s1 === void) s1 = 0;
+	var s2 = xp3S2[filename]; if (s2 === void) s2 = 0;
+
+	var pos = offset;
+	for (var i = 0; i < buffersize; ++i, ++pos) {
+		var b = buffer[i] ^ xp3KeyByte(pos, seed);
+		buffer[i] = b;
+		if (check && i >= skip) {
+			s1 = (s1 + b) & 0xFFFF;
+			s2 = (s2 + s1) & 0xFFFF;
+			have++;
+		}
+	}
+
+	xp3S1[filename] = s1;
+	xp3S2[filename] = s2;
+	if (check && size >= 0 && have === size) {
+		Debug.message("xp3filter: " + filename + " decoded " + have
+			+ " bytes, checksum=" + (s2 * 65536 + s1));
+		have = -1;		// logged once; further full passes are not reported
+	}
+	xp3Have[filename] = have;
+}
+
+// Content filter: hand the extraction filter this file's key seed *and* its
+// size through the stream's filter context.  Returning action 1 instead would
+// make the engine pre-read the whole file into one buffer (also a valid use of
+// this API); action 0 leaves the normal chunked read path in place, which is
+// what a real patch uses for large files.
+function xp3Content(filepath, archivename, filesize) {
+	return [0, [xp3NameSeed(filepath), filesize]];
+}
+
+Storages.setXP3ArchiveExtractionFilter(xp3Decode);
+Storages.setXP3ArchiveContentFilter(xp3Content);
+
+Debug.message("xp3filter: krkr2-smoke-xor/1 decoder registered");

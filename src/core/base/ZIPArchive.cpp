@@ -7,19 +7,65 @@
         #define NOUNCRYPT
 #endif
 
-#include "unzip/ioapi_mem.h"
-#include "unzip/unzip.h"
+// This translation unit is the unzip.c that cocos2d-x used to ship: it declares
+// its own public structures (the cocos2d-x copy added offset_curfile to
+// unz_file_info/unz_file_info64) and provides the entire unz* implementation
+// that ZipArchive below relies on. The cocos2d-x tree is not part of this port,
+// so the base io types now come from the minizip in src/core/utils/minizip.
+// Only "ioapi.h" is included on purpose: "unzip.h" would collide with the
+// structures and the prototypes this file defines for itself.
+#include "ioapi.h"
 #undef ZEXPORT
 #define ZEXPORT
 
-//using namespace cocos2d;
-typedef cocos2d::ZPOS64_T ZPOS64_T;
-typedef cocos2d::zlib_filefunc64_32_def zlib_filefunc64_32_def;
-typedef cocos2d::unz_global_info64 unz_global_info64;
-typedef cocos2d::zlib_filefunc_def zlib_filefunc_def;
-typedef cocos2d::zlib_filefunc64_def zlib_filefunc64_def;
-typedef cocos2d::unz_global_info unz_global_info;
-typedef cocos2d::tm_unz tm_unz;
+typedef voidp unzFile;
+
+#define UNZ_OK                          (0)
+#define UNZ_END_OF_LIST_OF_FILE         (-100)
+#define UNZ_ERRNO                       (Z_ERRNO)
+#define UNZ_EOF                         (0)
+#define UNZ_PARAMERROR                  (-102)
+#define UNZ_BADZIPFILE                  (-103)
+#define UNZ_INTERNALERROR               (-104)
+#define UNZ_CRCERROR                    (-105)
+
+/* compression method of bzip2 entries; same value minizip's unzip.h defines
+   (the bzip2 decompressor itself is only compiled with HAVE_BZIP2) */
+#define Z_BZIP2ED 12
+
+/* tm_unz contain date/time info */
+typedef struct tm_unz_s
+{
+	uInt tm_sec;            /* seconds after the minute - [0,59] */
+	uInt tm_min;            /* minutes after the hour - [0,59] */
+	uInt tm_hour;           /* hours since midnight - [0,23] */
+	uInt tm_mday;           /* day of the month - [1,31] */
+	uInt tm_mon;            /* months since January - [0,11] */
+	uInt tm_year;           /* years - [1980..2044] */
+} tm_unz;
+
+/* unz_global_info structure contain global data about the ZIPfile
+   These data comes from the end of central dir */
+typedef struct unz_global_info64_s
+{
+	ZPOS64_T number_entry;      /* total number of entries in
+	                               the central dir on this disk */
+	uLong size_comment;         /* size of the global comment of the zipfile */
+} unz_global_info64;
+
+typedef struct unz_global_info_s
+{
+	uLong number_entry;         /* total number of entries in
+	                               the central dir on this disk */
+	uLong size_comment;         /* size of the global comment of the zipfile */
+} unz_global_info;
+
+typedef struct unz_file_pos_s
+{
+	uLong pos_in_zip_directory;   /* offset in zip file directory */
+	uLong num_of_file;            /* # of file */
+} unz_file_pos;
+
 typedef struct unz_file_info_s
 {
 	uLong version;              /* version made by                 2 bytes */
@@ -40,7 +86,6 @@ typedef struct unz_file_info_s
 
 	tm_unz tmu_date;
 } unz_file_info;
-typedef cocos2d::unz_file_pos unz_file_pos;
 typedef struct unz64_file_pos_s
 {
 	ZPOS64_T pos_in_zip_directory;   /* offset in zip file directory */

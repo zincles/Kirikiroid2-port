@@ -73,6 +73,11 @@ void tTVPThread::WaitFor()
 //---------------------------------------------------------------------------
 tTVPThreadPriority tTVPThread::GetPriority()
 {
+#ifdef __SWITCH__
+	// libnx's pthread implementation has no pthread_getschedparam; threads run
+	// at the priority the system handed them, so report "normal".
+	return ttpNormal;
+#else
 	sched_param npri = { 0 };
 	int policy = 0;
 	pthread_getschedparam(Handle, &policy, &npri);
@@ -92,10 +97,16 @@ tTVPThreadPriority tTVPThread::GetPriority()
 	}
 
 	return ttpNormal;
+#endif
 }
 //---------------------------------------------------------------------------
 void tTVPThread::SetPriority(tTVPThreadPriority pri)
 {
+#ifdef __SWITCH__
+	// See GetPriority: libnx exposes no scheduling parameters to user code, so
+	// priority requests are accepted and ignored (documented limitation).
+	(void)pri;
+#else
 	sched_param npri = { 0 }; //SCHED_NORMAL
 	int policy = 0;
 	switch (pri)
@@ -109,6 +120,7 @@ void tTVPThread::SetPriority(tTVPThreadPriority pri)
 	case ttpTimeCritical:	policy = 2/*SCHED_RR*/;	    break;
 	}
 	pthread_setschedparam(Handle, policy, &npri);
+#endif
 }
 //---------------------------------------------------------------------------
 // void tTVPThread::Suspend()

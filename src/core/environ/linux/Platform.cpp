@@ -3,12 +3,34 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
-#include <sys/sysinfo.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 
+#ifdef __SWITCH__
+// Nintendo Switch (devkitA64/libnx): no /proc, no swap; the kernel reports the
+// DRAM budget through svcGetSystemInfo.
+#include <switch.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#else
+#include <sys/sysinfo.h>
+#endif
+
 void TVPGetMemoryInfo(TVPMemoryInfo &m)
 {
+#ifdef __SWITCH__
+	// All values in kB, matching the /proc/meminfo units used below.
+	u64 total = 0, used = 0;
+	if (R_SUCCEEDED(svcGetSystemInfo(&total, SystemInfoType_TotalPhysicalMemorySize, INVALID_HANDLE, 0))) {
+		m.MemTotal = (unsigned long)(total / 1024);
+	}
+	if (R_SUCCEEDED(svcGetSystemInfo(&used, SystemInfoType_UsedPhysicalMemorySize, INVALID_HANDLE, 0))) {
+		m.MemFree = (used < total) ? (unsigned long)((total - used) / 1024) : 0;
+	}
+	// The Switch has no swap and no vmalloc accounting.
+	m.SwapTotal = m.SwapFree = 0;
+	m.VirtualTotal = m.VirtualUsed = 0;
+#else
     /* to read /proc/meminfo */
     FILE* meminfo;
     char buffer[100] = {0};
@@ -65,8 +87,24 @@ void TVPGetMemoryInfo(TVPMemoryInfo &m)
         }
     }
     fclose(meminfo);
+#endif
 }
 
+#ifdef __SWITCH__
+void TVPRelinquishCPU(){
+	// Give the scheduler a chance to run another thread (libnx has no
+	// sched_yield; a zero-length sleep is the documented equivalent).
+	svcSleepThread(0);
+}
+
+void TVP_utime(const char *name, time_t modtime) {
+	struct timespec ts[2];
+	ts[0].tv_sec = modtime;
+	ts[0].tv_nsec = 0;
+	ts[1] = ts[0];
+	utimensat(AT_FDCWD, name, ts, 0);
+}
+#else
 #include <sched.h>
 void TVPRelinquishCPU(){
 	sched_yield();
@@ -80,3 +118,4 @@ void TVP_utime(const char *name, time_t modtime) {
 	mt[1].tv_usec = 0;
 	utimes(name, mt);
 }
+#endif

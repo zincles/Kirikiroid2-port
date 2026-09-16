@@ -23,6 +23,7 @@
 #ifndef _LIBINPUT_VELOCITY_TRACKER_H
 #define _LIBINPUT_VELOCITY_TRACKER_H
 
+#include <math.h> // hypotf() (the header uses it; upstream relied on the includer)
 /*
  * Implements a particular velocity tracker algorithm.
  */

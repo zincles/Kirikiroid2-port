@@ -16,7 +16,13 @@
 
 #define _USE_MATH_DEFINES
 #include <math.h>
+#if defined(_M_IX86)||defined(_M_X64)
+/* xmmlib.h (vendor) provides the SSE helpers (PM128/_ALIGN16/...) used by the
+   MSVC-only part of this header below. It is not part of this tree and is not
+   needed here: _M_IX86/_M_X64 are MSVC macros, so on this toolchain that part
+   is not compiled at all. */
 #include "xmmlib.h"
+#endif
 
 
 //---------------------------------------------------------------------------

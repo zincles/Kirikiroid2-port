@@ -19,7 +19,9 @@
 #include "WaveLoopManager.h"
 #include "tjsDictionary.h"
 #include "VorbisWaveDecoder.h"
+#if defined(KRKR2_ENABLE_FFWAVE)
 #include "FFWaveDecoder.h"
+#endif
 
 
 //---------------------------------------------------------------------------
@@ -747,13 +749,17 @@ struct tTVPWaveDecoderManager
 	std::vector<tTVPWaveDecoderCreator *> Creators;
 	tTVPWDC_RIFFWave RIFFWaveDecoderCreator;
     VorbisWaveDecoderCreator vorbisWaveDecoderCreator;
+#if defined(KRKR2_ENABLE_FFWAVE)
     FFWaveDecoderCreator ffWaveDecoderCreator;
+#endif
     OpusWaveDecoderCreator opusWaveDecoderCreator;
 
 	tTVPWaveDecoderManager()
 	{
 		TVPWaveDecoderManagerAvail = true;
+#if defined(KRKR2_ENABLE_FFWAVE)
         TVPRegisterWaveDecoderCreator(&ffWaveDecoderCreator);
+#endif
         TVPRegisterWaveDecoderCreator(&opusWaveDecoderCreator);
 		TVPRegisterWaveDecoderCreator(&RIFFWaveDecoderCreator);
         TVPRegisterWaveDecoderCreator(&vorbisWaveDecoderCreator);

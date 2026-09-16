@@ -1,0 +1,6 @@
+build/
+build-*/
+savedata/
+*.console.log
+__pycache__/
+*.pyc

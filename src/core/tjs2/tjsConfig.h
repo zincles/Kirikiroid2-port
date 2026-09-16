@@ -84,6 +84,10 @@ extern tjs_int TJS_sprintf(tjs_char *s, const tjs_char *format, ...);
 #if defined(_MSC_VER)
 	#define TJS_cdecl __cdecl
 	#define TJS_timezone _timezone
+#elif defined(__SWITCH__)
+	// devkitA64's newlib exposes the SVID name, not glibc's "timezone"
+	#define TJS_cdecl
+	#define TJS_timezone _timezone
 #else
 	#define TJS_cdecl
 	#define TJS_timezone timezone

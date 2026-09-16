@@ -1,17 +1,29 @@
+#include "Platform.h"
+#include "SysInitIntf.h"
+#include "ConfigManager/LocaleConfigManager.h"
+#include "StorageImpl.h"
+#include "DebugIntf.h"
+#include <sys/stat.h>
+#include <cstdio>
+#include <map>
+#include <string>
+#include <vector>
+
+#if !defined(TVP_SDL2)
+// crash-report upload: cocos2d-x networking plus the minizip-based payload
 #include "network/HttpRequest.h"
 #include "network/HttpClient.h"
 #include "base/CCDirector.h"
 #include "base/CCScheduler.h"
 #include "base/base64.h"
-#include "Platform.h"
-#include "SysInitIntf.h"
-#include "ConfigManager/LocaleConfigManager.h"
-#include "StorageImpl.h"
 #include "minizip/ioapi.h"
 #include "minizip/zip.h"
 #include <sstream>
 #include <iomanip>
 #include <condition_variable>
+#include <thread>
+#include <functional>
+#endif
 
 static void ClearDumps(const std::string &dumpdir, std::vector<std::string> &allDumps) {
 	for (const std::string &path : allDumps) {
@@ -20,6 +32,7 @@ static void ClearDumps(const std::string &dumpdir, std::vector<std::string> &all
 	//allDumps.clear();
 }
 
+#if !defined(TVP_SDL2)
 static std::map<std::string, tTVPMemoryStream*> _inmemFiles;
 
 struct zlib_inmem_func64 : public zlib_filefunc64_def {
@@ -205,6 +218,7 @@ static void SendDumps(std::string dumpdir, std::vector<std::string> allDumps, st
 	}
 	//allDumps.clear();
 }
+#endif // !defined(TVP_SDL2)
 
 void TVPCheckAndSendDumps(const std::string &dumpdir, const std::string &packageName, const std::string &versionStr) {
 	std::vector<std::string> allDumps;
@@ -215,16 +229,31 @@ void TVPCheckAndSendDumps(const std::string &dumpdir, const std::string &package
 			allDumps.emplace_back(name);
 		}
 	});
-	if (!allDumps.empty()) {
-		std::string title = LocaleConfigManager::GetInstance()->GetText("crash_report");
-		std::string msgfmt = LocaleConfigManager::GetInstance()->GetText("crash_report_msg");
-		char buf[256];
-		sprintf(buf, msgfmt.c_str(), allDumps.size());
-		if (TVPShowSimpleMessageBoxYesNo(buf, title) == 0) {
-			static std::thread dumpthread;
-			dumpthread = std::thread(std::bind(SendDumps, dumpdir, allDumps, packageName, versionStr));
-		} else {
-			ClearDumps(dumpdir, allDumps);
-		}
+	if (allDumps.empty()) return;
+
+	std::string title = LocaleConfigManager::GetInstance()->GetText("crash_report");
+	std::string msgfmt = LocaleConfigManager::GetInstance()->GetText("crash_report_msg");
+	char buf[256];
+	sprintf(buf, msgfmt.c_str(), allDumps.size());
+	if (TVPShowSimpleMessageBoxYesNo(buf, title) != 0) {
+		// refused: drop the dumps, as the cocos2d-x build did
+		ClearDumps(dumpdir, allDumps);
+		return;
 	}
+#if !defined(TVP_SDL2)
+	static std::thread dumpthread;
+	dumpthread = std::thread(std::bind(SendDumps, dumpdir, allDumps, packageName, versionStr));
+#else
+	// This build has no crash-report endpoint (the upload went through
+	// cocos2d-x's HttpRequest), so a confirmed report cannot be sent.  Keep
+	// the dumps in place and log where they are instead of dropping them
+	// silently: the user can attach them to a bug report by hand.
+	for (const std::string &name : allDumps) {
+		std::string report("crash report ");
+		report += name;
+		report += " of "; report += packageName; report += " "; report += versionStr;
+		report += " kept at "; report += dumpdir; report += "/"; report += name;
+		TVPAddLog(ttstr(report.c_str()));
+	}
+#endif
 }

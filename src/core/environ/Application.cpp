@@ -30,9 +30,14 @@
 #include <thread>
 #include "ConfigManager/LocaleConfigManager.h"
 #include "StorageIntf.h"
+// libavutil is optional here; its only use was av_dirname() in
+// ExtractFileDir(), which now has a plain std::string implementation.
+// Define KRKR2_USE_LIBAVUTIL (and link libavutil) to keep the ffmpeg one.
+#if defined(KRKR2_USE_LIBAVUTIL)
 extern "C" {
 #include <libavutil/avstring.h>
 }
+#endif
 #include "TVPColor.h"
 #include "FontImpl.h"
 
@@ -1137,7 +1142,27 @@ void TVPInitWindowOptions() {
 }
 
 std::string ExtractFileDir(const std::string & FileName) {
+#if defined(KRKR2_USE_LIBAVUTIL)
 	return av_dirname((char*)FileName.c_str());
+#else
+	// equivalent of av_dirname(): the directory part of the path, without
+	// the trailing delimiter.  "." when the path carries no delimiter at
+	// all (the empty path included), and "" when the delimiter is the
+	// leading character ("/name").
+	std::string::size_type pos = FileName.rfind('/');
+#ifdef _WIN32
+	// av_dirname() built with HAVE_DOS_PATHS (i.e. for Windows) also splits
+	// at backslashes and right after a drive letter's colon
+	{
+		std::string::size_type q = FileName.rfind('\\');
+		if (q != std::string::npos && (pos == std::string::npos || q > pos)) pos = q;
+		std::string::size_type d = FileName.find(':');
+		if (d != std::string::npos && (pos == std::string::npos || d + 1 > pos)) pos = d + 1;
+	}
+#endif
+	if (pos == std::string::npos) return ".";
+	return FileName.substr(0, pos);
+#endif
 }
 
 unsigned long ColorToRGB(unsigned int col)

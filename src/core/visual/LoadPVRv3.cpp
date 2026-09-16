@@ -4,10 +4,10 @@
 #include "MsgIntf.h"
 #include "ogl/etcpak.h"
 #include "ogl/pvr.h"
+#include "ogl/PVRTDecompress.h"	// PVRTDecompressPVRTC (vendored, see ogl/PVRTDecompress.h)
 #include "UtilStreams.h"
 #include "RenderManager.h"
 #include "tvpgl.h"
-#include "base/pvr.h"
 #include "LayerBitmapIntf.h"
 
 // pvr format only used as normal picture or univ trans rule ( not as province image )

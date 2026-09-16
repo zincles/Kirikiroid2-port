@@ -42,7 +42,10 @@ extern "C"
 {
 #include <turbojpeg.h>
 #define XMD_H
-#include <jinclude.h>
+/* jinclude.h belongs to libjpeg-turbo's private sources and is not installed
+   by the system package. It only pulled in jconfig.h/jmorecfg.h (also reached
+   through the public jpeglib.h) and the internal MEMZERO/MEMCOPY helpers,
+   none of which this file uses. */
 #include <jpeglib.h>
 #include <jerror.h>
 }

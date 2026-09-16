@@ -331,6 +331,11 @@ bool TVPSelectFile(iTJSDispatch2 *params)
 	{
 		ttstr lname(val);
 		if (!lname.IsEmpty()){
+			// A script passes this as a plain path ("./fixtures", "/home/x"),
+			// which carries no media name, and TVPGetLocalName() rejects those
+			// with "Not supported media type" - the `name` branch below
+			// normalises first for exactly that reason.
+			lname = TVPNormalizeStorageName(lname);
 			TVPGetLocalName(lname);
 			initialdir = tTJSNarrowStringHolder(lname.c_str());
 		}

@@ -1,12 +1,14 @@
 #include "RenderManager.h"
-#include "renderer/CCTexture2D.h"
-typedef cocos2d::Texture2D::PixelFormat CCPixelFormat;
 #include "MsgIntf.h"
 #include "LayerBitmapIntf.h"
+#include "ResampleImage.h"
 #include "SysInitIntf.h"
 #include "tvpgl.h"
 #include <assert.h>
 #include <algorithm>
+#include <cfloat>
+#include <cmath>
+#include "WeightFunctor.h"
 #include "ThreadIntf.h"
 #include "argb.h"
 extern "C" {
@@ -17,9 +19,7 @@ extern "C" {
 #ifndef __STDC_CONSTANT_MACROS
 #define __STDC_CONSTANT_MACROS
 #endif
-#include "libswscale/swscale.h"
 };
-#include "opencv2/opencv.hpp"
 #include "Application.h"
 #include "Platform.h"
 #include "ConfigManager/IndividualConfigManager.h"
@@ -28,17 +28,6 @@ extern "C" {
 #include "EventIntf.h"
 #include "lz4/lz4.h"
 
-#ifdef _MSC_VER
-#pragma comment(lib,"opencv_ts300d.lib")
-// #pragma comment(lib,"ippicvmt.lib")
-// #pragma comment(lib,"opencv_core300d.lib")
-// #pragma comment(lib,"opencv_imgproc300d.lib")
-// #pragma comment(lib,"opencv_hal300d.lib")
-#pragma comment(lib,"opencv_world300d.lib")
-#endif
-
-//#define USE_SWSCALE
-#define USE_CV_AFFINE
 
 //---------------------------------------------------------------------------
 // heap allocation functions for bitmap bits
@@ -357,19 +346,6 @@ public:
 	}
 	virtual tjs_int GetPitch() const { return Pitch; }
 
-	virtual cocos2d::Texture2D* GetAdapterTexture(cocos2d::Texture2D* origTex) override {
-		if (!origTex || origTex->getPixelsWide() != Width || origTex->getPixelsHigh() != Height) {
-			origTex = new cocos2d::Texture2D;
-			origTex->autorelease();
-			origTex->initWithData(BmpData, Pitch * Height,
-				CCPixelFormat::RGBA8888, Pitch / 4, Height,
-				cocos2d::Size::ZERO);
-		} else {
-			origTex->updateWithData(BmpData, 0, 0, Pitch / 4, Height);
-		}
-		return origTex;
-	}
-
 	virtual size_t GetBitmapSize() override { return Pitch * Height * (Format == TVPTextureFormat::RGBA ? 4 : 1); }
 };
 
@@ -451,20 +427,6 @@ public:
 	virtual void Update(const void *pixel, TVPTextureFormat::e format, int pitch, const tTVPRect& rc) override {
 		assert(0);
 	}
-
-	virtual cocos2d::Texture2D* GetAdapterTexture(cocos2d::Texture2D* origTex) override {
-		GetPixelData();
-		if (!origTex || origTex->getPixelsWide() != Width || origTex->getPixelsHigh() != Height) {
-			origTex = new cocos2d::Texture2D;
-			origTex->autorelease();
-			origTex->initWithData(BmpData, Pitch * Height,
-				CCPixelFormat::RGBA8888, Width, Height,
-				cocos2d::Size::ZERO);
-		} else {
-			origTex->updateWithData(BmpData, 0, 0, Width, Height);
-		}
-		return origTex;
-	}
 };
 
 class tTVPSoftwareTexture2D_half : public tTVPSoftwareTexture2D_compress {
@@ -530,22 +492,6 @@ public:
 	virtual tjs_uint DecompressLineData(tjs_uint line, tjs_uint8 *buf) override {
 		memcpy(buf, tTVPSoftwareTexture2D_half::GetScanLineForRead(line), Pitch);
 		return 1;
-	}
-
-	virtual cocos2d::Texture2D* GetAdapterTexture(cocos2d::Texture2D* origTex) override {
-		if (!origTex || origTex->getPixelsWide() != Width || origTex->getPixelsHigh() != _scanline.size()) {
-			origTex = new cocos2d::Texture2D;
-			origTex->autorelease();
-			origTex->initWithData(nullptr, Pitch * _scanline.size(),
-				CCPixelFormat::RGBA8888, Width, _scanline.size(),
-				cocos2d::Size::ZERO);
-		}
-		int y = 0;
-		for (const tjs_uint8* line : _scanline) {
-			origTex->updateWithData(line, 0, y, Width, 1);
-			++y;
-		}
-		return origTex;
 	}
 
 	virtual tjs_uint GetInternalHeight() const override { return _scanline.size(); }
@@ -2126,6 +2072,95 @@ struct TDoBoxBlurLoop {
 	}
 };
 
+//---------------------------------------------------------------------------
+// native box blur, replaces the removed image processing library implementation
+//---------------------------------------------------------------------------
+
+// Index inside [0, n) the BORDER_REFLECT_101 edge extension uses for an
+// arbitrary (also out of range) index i:   ... c b a | a b c d | d c b a ...
+static inline tjs_int TVPReflect101(tjs_int i, tjs_int n) {
+	if (n <= 1) return 0;
+	tjs_int period = (n - 1) * 2;
+	i %= period;
+	if (i < 0) i += period;
+	return i < n ? i : period - i;
+}
+
+// Normalized box filter over 4 channel 8bit data; the previous implementation
+// called the reference function as
+//		boxFilter(src, dst, -1, Size(kw, kh))
+// so the kernel is (kw, kh) with its anchor at the kernel centre, the result is
+// normalized by the kernel area and the edges use the default BORDER_REFLECT_101
+// extension.  Each channel is filtered independently.  The source is the sw x sh
+// image at src and the destination the dw x dh image at dst; both are accessed
+// with their own pitch.  Only the destination area is written.
+//
+// The filter is evaluated separably: columnsum() computes the vertical (kh tap)
+// sum of one source column for every destination row, and those column sums are
+// combined with a sliding window over the kw source columns the current
+// destination column needs.  All sums are exact, only the final division by the
+// kernel area is rounded (half up).
+static void TVPBoxBlurRGBA(const tjs_uint8 *src, tjs_int spitch, tjs_int sw, tjs_int sh,
+	tjs_uint8 *dst, tjs_int dpitch, tjs_int dw, tjs_int dh, tjs_int kw, tjs_int kh)
+{
+	if (dw <= 0 || dh <= 0 || kw <= 0 || kh <= 0) return;
+	if (sw <= 0 || sh <= 0) return;
+	const tjs_int ax = kw / 2, ay = kh / 2;
+	const tjs_uint64 area = (tjs_uint64)kw * (tjs_uint64)kh;
+	const tjs_uint64 half = area / 2;
+
+	// kernel window of source columns for destination column x: the window
+	// entry j (source column TVPReflect101(x - ax + j, sw)) is kept in slot
+	// (x + j) % kw, so only the slot of the leaving column has to be replaced
+	// when x advances.
+	std::vector<tjs_uint32> colsum((size_t)kw * dh * 4);
+	std::vector<tjs_uint64> wsum((size_t)dh * 4);
+
+	// vertical sums of the source column xs, for each destination row
+	auto columnsum = [&](tjs_int xs, tjs_uint32 *out) {
+		const tjs_uint8 *col = src + (size_t)xs * 4;
+		tjs_uint32 s[4];
+		for (int c = 0; c < 4; ++c) s[c] = 0;
+		for (tjs_int j = 0; j < kh; ++j) {
+			const tjs_uint8 *p = col + (size_t)TVPReflect101(j - ay, sh) * spitch;
+			for (int c = 0; c < 4; ++c) s[c] += p[c];
+		}
+		for (tjs_int y = 0; y < dh; ++y) {
+			for (int c = 0; c < 4; ++c) out[y * 4 + c] = s[c];
+			if (y + 1 >= dh) break;
+			const tjs_uint8 *sub = col + (size_t)TVPReflect101(y - ay, sh) * spitch;
+			const tjs_uint8 *add = col + (size_t)TVPReflect101(y + kh - ay, sh) * spitch;
+			for (int c = 0; c < 4; ++c) s[c] = s[c] - sub[c] + add[c];
+		}
+	};
+
+	for (tjs_int j = 0; j < kw; ++j)
+		columnsum(TVPReflect101(j - ax, sw), &colsum[(size_t)j * dh * 4]);
+	for (tjs_int y = 0; y < dh; ++y) {
+		for (int c = 0; c < 4; ++c) {
+			tjs_uint64 s = 0;
+			for (tjs_int j = 0; j < kw; ++j) s += colsum[((size_t)j * dh + y) * 4 + c];
+			wsum[(size_t)y * 4 + c] = s;
+		}
+	}
+
+	for (tjs_int x = 0; x < dw; ++x) {
+		if (x) {
+			tjs_uint32 *slot = &colsum[(size_t)((x - 1) % kw) * dh * 4];
+			for (tjs_int y = 0; y < dh; ++y)
+				for (int c = 0; c < 4; ++c) wsum[(size_t)y * 4 + c] -= slot[y * 4 + c];
+			columnsum(TVPReflect101(x + kw - 1 - ax, sw), slot);
+			for (tjs_int y = 0; y < dh; ++y)
+				for (int c = 0; c < 4; ++c) wsum[(size_t)y * 4 + c] += slot[y * 4 + c];
+		}
+		tjs_uint8 *d = dst + (size_t)x * 4;
+		for (tjs_int y = 0; y < dh; ++y) {
+			for (int c = 0; c < 4; ++c)
+				d[(size_t)y * dpitch + c] = (tjs_uint8)((wsum[(size_t)y * 4 + c] + half) / area);
+		}
+	}
+}
+
 template< typename Func16, typename Func32>
 class tTVPRenderMethod_DoBoxBlur : public tTVPRenderMethod_DirectCopy {
 	tTVPRect area;
@@ -2170,12 +2205,10 @@ public:
 		const uint8_t *sdata = (const uint8_t *)src->GetPixelData() + (rcsrc.top * spitch + rcsrc.left * 4);
 		uint8_t *ddata = (uint8_t *)tar->GetScanLineForWrite(rcdst.top) + rcdst.left * 4;
 		int dpitch = tar->GetPitch();
-		
-		cv::Mat src_img(sh, sw, CV_8UC4, (void*)sdata, spitch);
-		cv::Mat dst_img(dh, dw, CV_8UC4, (void*)ddata, dpitch);
-		cv::Size areasize(area.get_width() + 1, area.get_height() + 1);
-		cv::boxFilter(src_img, dst_img, -1, areasize);
-// 		if (area_size < 256)
+
+		TVPBoxBlurRGBA(sdata, spitch, sw, sh, ddata, dpitch, dw, dh,
+			area.get_width() + 1, area.get_height() + 1);
+// 		tjs_uint64 area_size = (tjs_uint64)
 // 			Func16::DoBoxBlurLoop(rctar, area, _tar->GetWidth(), _tar->GetHeight(), (tjs_uint32*)line, pitchBytes);
 // 		else if (area_size < (1L << 24))
 // 			Func32::DoBoxBlurLoop(rctar, area, _tar->GetWidth(), _tar->GetHeight(), (tjs_uint32*)line, pitchBytes);
@@ -2397,32 +2430,173 @@ iTVPRenderMethod* iTVPRenderManager::GetOrCompileRenderMethod(const char *name, 
 	return CompileRenderMethod(name, glsl_script, nTex, flags);
 }
 
-static int cvFlags[4] = {
-	cv::INTER_NEAREST, // stNearest
-	cv::INTER_AREA, // stFastLinear
-	cv::INTER_LINEAR, // stLinear
-	cv::INTER_CUBIC, // stCubic
-};
-
-static double tTVPPointD_distQ(const tTVPPointD& p0, const tTVPPointD& p1) {
-	double dx = p0.x - p1.x, dy = p0.y - p1.y;
-	return dx * dx + dy * dy;
-}
-
 static bool isDoubleEqual(double a, double b) {
 	a -= b; if (a < 0) a = -a;
 	return a < 0.001;
 }
 
-static bool checkQuadSquared(const tTVPPointD *p) {
-	double d01 = tTVPPointD_distQ(p[0], p[1]);
-	double d23 = tTVPPointD_distQ(p[2], p[3]);
-	double d12 = tTVPPointD_distQ(p[1], p[2]);
-	double d03 = tTVPPointD_distQ(p[0], p[3]);
-	return isDoubleEqual(d01, d23) && isDoubleEqual(d12, d03);
+//---------------------------------------------------------------------------
+// native replacements for the removed image processing library warp helpers
+//---------------------------------------------------------------------------
+
+// Homography from the four point correspondences s[i] -> d[i] (upper-left,
+// upper-right, lower-right, lower-left), as the reference getPerspectiveTransform
+// builds it.  Returns false if the correspondences are degenerate.
+static bool TVPGetPerspectiveMatrix(const tTVPPointD *s, const tTVPPointD *d, double H[9]) {
+	double a[8][9];
+	for (int i = 0; i < 4; ++i) {
+		double X = s[i].x, Y = s[i].y, u = d[i].x, v = d[i].y;
+		double *r0 = a[i * 2], *r1 = a[i * 2 + 1];
+		r0[0] = X; r0[1] = Y; r0[2] = 1; r0[3] = 0; r0[4] = 0; r0[5] = 0;
+		r0[6] = -u * X; r0[7] = -u * Y; r0[8] = u;
+		r1[0] = 0; r1[1] = 0; r1[2] = 0; r1[3] = X; r1[4] = Y; r1[5] = 1;
+		r1[6] = -v * X; r1[7] = -v * Y; r1[8] = v;
+	}
+	// gaussian elimination with partial pivoting
+	for (int col = 0; col < 8; ++col) {
+		int pivot = col;
+		for (int r = col + 1; r < 8; ++r)
+			if (std::abs(a[r][col]) > std::abs(a[pivot][col])) pivot = r;
+		if (std::abs(a[pivot][col]) < 1e-12) return false;
+		if (pivot != col)
+			for (int c = col; c < 9; ++c) std::swap(a[col][c], a[pivot][c]);
+		for (int r = col + 1; r < 8; ++r) {
+			double f = a[r][col] / a[col][col];
+			if (f == 0.0) continue;
+			for (int c = col; c < 9; ++c) a[r][c] -= f * a[col][c];
+		}
+	}
+	for (int r = 7; r >= 0; --r) {
+		double t = a[r][8];
+		for (int c = r + 1; c < 8; ++c) t -= a[r][c] * H[c];
+		H[r] = t / a[r][r];
+	}
+	H[8] = 1.0;
+	return true;
+}
+
+static bool TVPInvertPerspectiveMatrix(const double H[9], double Hi[9]) {
+	double det = H[0] * (H[4] * H[8] - H[5] * H[7])
+		- H[1] * (H[3] * H[8] - H[5] * H[6])
+		+ H[2] * (H[3] * H[7] - H[4] * H[6]);
+	if (det == 0.0) return false;
+	double inv = 1.0 / det;
+	Hi[0] = (H[4] * H[8] - H[5] * H[7]) * inv;
+	Hi[1] = (H[2] * H[7] - H[1] * H[8]) * inv;
+	Hi[2] = (H[1] * H[5] - H[2] * H[4]) * inv;
+	Hi[3] = (H[5] * H[6] - H[3] * H[8]) * inv;
+	Hi[4] = (H[0] * H[8] - H[2] * H[6]) * inv;
+	Hi[5] = (H[2] * H[3] - H[0] * H[5]) * inv;
+	Hi[6] = (H[3] * H[7] - H[4] * H[6]) * inv;
+	Hi[7] = (H[1] * H[6] - H[0] * H[7]) * inv;
+	Hi[8] = (H[0] * H[4] - H[1] * H[3]) * inv;
+	return true;
+}
+
+// Inverse map of the perspective/affine warp as the reference warpPerspective
+// (and warpAffine) performed it: the colour of destination pixel (x, y) of the
+// dw x dh image at dst is the source image at the point the inverse homography
+// maps (x, y) to, sampled with the interpolation selected by StretchType
+// (stNearest: nearest, stFastLinear/stLinear: bilinear, stCubic: bicubic with
+// the Catmull-Rom kernel).  Samples outside of the sw x sh source image are
+// taken from the constant border with value 0 (the default of the previous
+// implementation), i.e. an out of range tap contributes zero with its weight
+// kept.
+static void TVPWarpPerspectiveRGBA(const tjs_uint8 *src, tjs_int spitch, tjs_int sw, tjs_int sh,
+	tjs_uint8 *dst, tjs_int dpitch, tjs_int dw, tjs_int dh,
+	const tTVPPointD *srcpt, const tTVPPointD *dstpt, tTVPBBStretchType StretchType)
+{
+	if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return;
+	double H[9], Hi[9];
+	if (!TVPGetPerspectiveMatrix(srcpt, dstpt, H)) return;
+	if (!TVPInvertPerspectiveMatrix(H, Hi)) return;
+
+	static const BicubicWeight cubic(-0.5f); // Catmull-Rom
+
+	for (tjs_int y = 0; y < dh; ++y) {
+		tjs_uint8 *d = dst + (size_t)y * dpitch;
+		for (tjs_int x = 0; x < dw; ++x, d += 4) {
+			double X = Hi[0] * x + Hi[1] * y + Hi[2];
+			double Y = Hi[3] * x + Hi[4] * y + Hi[5];
+			double W = Hi[6] * x + Hi[7] * y + Hi[8];
+			// cv maps the point to the source origin if the divisor vanishes
+			double sx = W == 0.0 ? 0.0 : X / W, sy = W == 0.0 ? 0.0 : Y / W;
+			double v[4] = { 0, 0, 0, 0 };
+			if (StretchType == stNearest) {
+				int ix = (int)std::floor(sx + 0.5), iy = (int)std::floor(sy + 0.5);
+				if ((unsigned)ix < (unsigned)sw && (unsigned)iy < (unsigned)sh) {
+					const tjs_uint8 *s = src + (size_t)iy * spitch + (size_t)ix * 4;
+					for (int c = 0; c < 4; ++c) v[c] = s[c];
+				}
+			} else if (StretchType == stCubic) {
+				int ix = (int)std::floor(sx) - 1, iy = (int)std::floor(sy) - 1;
+				double fx = sx - (ix + 1), fy = sy - (iy + 1);
+				for (int j = 0; j < 4; ++j) {
+					double wy = cubic((float)(j - fy - 1));
+					if (wy == 0.0) continue;
+					int yy = iy + j;
+					if ((unsigned)yy >= (unsigned)sh) continue;
+					const tjs_uint8 *s = src + (size_t)yy * spitch;
+					for (int i = 0; i < 4; ++i) {
+						double wx = cubic((float)(i - fx - 1));
+						if (wx == 0.0) continue;
+						int xx = ix + i;
+						if ((unsigned)xx >= (unsigned)sw) continue;
+						double w = wx * wy;
+						const tjs_uint8 *p = s + (size_t)xx * 4;
+						for (int c = 0; c < 4; ++c) v[c] += w * p[c];
+					}
+				}
+			} else { // stFastLinear, stLinear
+				int ix = (int)std::floor(sx), iy = (int)std::floor(sy);
+				double fx = sx - ix, fy = sy - iy;
+				for (int j = 0; j < 2; ++j) {
+					double wy = j ? fy : 1.0 - fy;
+					if (wy == 0.0) continue;
+					int yy = iy + j;
+					if ((unsigned)yy >= (unsigned)sh) continue;
+					const tjs_uint8 *s = src + (size_t)yy * spitch;
+					for (int i = 0; i < 2; ++i) {
+						double wx = i ? fx : 1.0 - fx;
+						if (wx == 0.0) continue;
+						int xx = ix + i;
+						if ((unsigned)xx >= (unsigned)sw) continue;
+						double w = wx * wy;
+						const tjs_uint8 *p = s + (size_t)xx * 4;
+						for (int c = 0; c < 4; ++c) v[c] += w * p[c];
+					}
+				}
+			}
+			for (int c = 0; c < 4; ++c) {
+				int t = (int)(v[c] + 0.5);
+				d[c] = (tjs_uint8)(t < 0 ? 0 : (t > 255 ? 255 : t));
+			}
+		}
+	}
 }
 
 static iTVPTexture2D* (*_createStaticTexture2D)(tTVPBitmap *bmp, const void *pixel, int pitch, unsigned int w, unsigned int h, TVPTextureFormat::e format);
+
+iTVPRenderManager *TVPGetSoftwareRenderManager(); // defined at the end of this file
+
+// Non owning iTVPBaseBitmap view over an existing texture, used to hand the
+// temporary textures this render manager works on to the engine's own
+// resampler (TVPResampleImage).  The texture is not referenced: the view is
+// only alive for the duration of a single call, so the reference count of the
+// texture stays as it is (TVPResampleImage writes into a destination whose
+// texture is not shared and therefore needs no copy).
+class tTVPSoftwareBitmapView : public iTVPBaseBitmap
+{
+public:
+	tTVPSoftwareBitmapView(iTVPTexture2D *tex) { Bitmap = tex; }
+	~tTVPSoftwareBitmapView() { Bitmap = nullptr; }
+	virtual iTVPRenderManager* GetRenderManager() override;
+};
+
+iTVPRenderManager* tTVPSoftwareBitmapView::GetRenderManager() {
+	return TVPGetSoftwareRenderManager();
+}
+
 class tTVPSoftwareRenderManager : public iTVPRenderManager {
 
 	struct eParameters {
@@ -2432,9 +2606,6 @@ class tTVPSoftwareRenderManager : public iTVPRenderManager {
 	};
 
 	tTVPBBStretchType StretchType;
-
-	struct SwsContext *img_convert_ctx;
-	SwsContext *sws_opts;
 
 	iTVPTexture2D *tempTexture;
 
@@ -2630,7 +2801,6 @@ public:
 	tTVPSoftwareRenderManager()
 		: StretchType(stNearest)
 		, tempTexture(nullptr)
-		, img_convert_ctx(nullptr)
 		, _drawCount(0)
 	{
 		_createStaticTexture2D = tTVPSoftwareTexture2D::Create;
@@ -2729,9 +2899,8 @@ public:
 		switch (id) {
 		case eParameters::StretchType:
 			StretchType = (tTVPBBStretchType)Value;
-			if (StretchType > sizeof(cvFlags) / sizeof(cvFlags[0])) {
-				StretchType = (tTVPBBStretchType)(sizeof(cvFlags) / sizeof(cvFlags[0]) - 1);
-			}
+			if (StretchType < stNearest) StretchType = stNearest;
+			if (StretchType > stCubic) StretchType = stCubic;
 			break;
 		default:
 			break;
@@ -2773,32 +2942,30 @@ public:
 			sdata = (const uint8_t *)src->GetPixelData() + (rcsrc.top * spitch + rcsrc.left * 4);
 
 			iTVPTexture2D *tmp = getTempTexture(dw, dh + 1);
-			uint8_t *ddata = (uint8_t *)tmp->GetScanLineForWrite(0);
-			int dpitch = tmp->GetPitch();
+			tTVPRect rc(0, 0, dw, dh);
 // #ifdef _DEBUG
 // 			printf("resize (%d, %d) -> (%d, %d)\n", sw, sh, dw, dh);
 // #endif
-#ifdef USE_SWSCALE
-			static int swsFlags[4] = {
-				SWS_POINT, // stNearest
-				SWS_FAST_BILINEAR, // stFastLinear
-				SWS_BILINEAR, // stLinear
-				SWS_BICUBIC, // stCubic
-			};
-			//assert(StretchType < sizeof(swsFlags) / sizeof(swsFlags[0]));
-			img_convert_ctx = sws_getCachedContext(img_convert_ctx,
-				sw, sh, AV_PIX_FMT_RGBA, dw, dh, AV_PIX_FMT_RGBA,
-				swsFlags[StretchType], nullptr, nullptr, nullptr);
-			//assert(img_convert_ctx);
-			// TODO multithreaded
-			sws_scale(img_convert_ctx, &sdata, &spitch, 0, sh, &ddata, &dpitch);
-#else
-			cv::Size dsize(dw, dh);
-			cv::Mat src_img(sh, sw, CV_8UC4, (void*)sdata, spitch);
-			cv::Mat dst_img(dh, dw, CV_8UC4, (void*)ddata, dpitch);
-			cv::resize(src_img, dst_img, dsize, 0, 0, cvFlags[StretchType]);
-#endif
-			tTVPRect rc(0, 0, dw, dh);
+			if (StretchType == stNearest) {
+				// TVPResampleImage has no nearest neighbour mode; the engine's
+				// affine loops use the same mapping: the destination pixel takes
+				// the source pixel floor(x * sw / dw), floor(y * sh / dh).
+				uint8_t *ddata = (uint8_t *)tmp->GetScanLineForWrite(0);
+				int dpitch = tmp->GetPitch();
+				for (tjs_int y = 0; y < dh; ++y) {
+					const uint8_t *sline = sdata + (size_t)((tjs_int64)y * sh / dh) * spitch;
+					uint8_t *dline = ddata + (size_t)y * dpitch;
+					for (tjs_int x = 0; x < dw; ++x)
+						memcpy(dline + (size_t)x * 4, sline + (size_t)((tjs_int64)x * sw / dw) * 4, 4);
+				}
+			} else {
+				// stFastLinear is handled as linear interpolation throughout the
+				// engine (TVP_BILINEAR_FORCE_COND || type >= stFastLinear).
+				tTVPSoftwareBitmapView dstview(tmp);
+				tTVPSoftwareBitmapView srcview(src);
+				TVPResampleImage(rc, &dstview, rc, &srcview, rcsrc,
+					StretchType == stFastLinear ? stLinear : StretchType, 0.0f, bmCopy, 255, false);
+			}
 			((tTVPRenderMethod_Software*)method)->DoRender(
 				tar, rctar,
 				tar, rctar,
@@ -2816,21 +2983,6 @@ public:
 	virtual void OperateRect(iTVPRenderMethod* method,
 		iTVPTexture2D *tar, iTVPTexture2D *reftar, const tTVPRect& rctar,
 		const tRenderTexRectArray &textures) {
-#ifdef _DEBUG
-		static bool check = false;
-		cv::Mat _src[3], _tar;
-		if (check) {
-			for (int i = 0; i < textures.size(); ++i) {
-				iTVPTexture2D* tex = textures[i].first;
-				unsigned int fmt = tex->GetFormat() == TVPTextureFormat::RGBA ? CV_8UC4 : CV_8UC1;
-				_src[i] = cv::Mat(tex->GetHeight(), tex->GetWidth(), fmt, (void*)tex->GetPixelData(), tex->GetPitch());
-			}
-			unsigned int fmt = tar->GetFormat() == TVPTextureFormat::RGBA ? CV_8UC4 : CV_8UC1;
-			_tar = cv::Mat(tar->GetHeight(), tar->GetWidth(), fmt, (void*)tar->GetPixelData(), tar->GetPitch());
-			_tar.type();
-		}
-#endif
-
 		for (int i = 0; i < textures.size(); ++i) {
 			textures[i].first->GetScanLineForRead(0); // prepare pixel data for compressed texture
 		}
@@ -3194,24 +3346,24 @@ public:
 			sdata = (const uint8_t *)src->GetPixelData();
 
 			// upper-left, upper-right, bottom-right, bottom-left
-			cv::Point2f pts_src[] = {
-				cv::Point2f(srcpt[0].x, srcpt[0].y),
-				cv::Point2f(srcpt[1].x + 1, srcpt[1].y),
-				cv::Point2f(srcpt[5].x + 1, srcpt[5].y + 1),
-				cv::Point2f(srcpt[2].x, srcpt[2].y + 1),
+			tTVPPointD pts_src[] = {
+				{ srcpt[0].x, srcpt[0].y },
+				{ srcpt[1].x + 1, srcpt[1].y },
+				{ srcpt[5].x + 1, srcpt[5].y + 1 },
+				{ srcpt[2].x, srcpt[2].y + 1 },
 			};
-			cv::Point2f pts_dst[] = {
-				cv::Point2f(dstpt[0].x - rcclip.left, dstpt[0].y - rcclip.top),
-				cv::Point2f(dstpt[1].x - rcclip.left, dstpt[1].y - rcclip.top),
-				cv::Point2f(dstpt[5].x - rcclip.left, dstpt[5].y - rcclip.top),
-				cv::Point2f(dstpt[2].x - rcclip.left, dstpt[2].y - rcclip.top),
+			tTVPPointD pts_dst[] = {
+				{ dstpt[0].x - rcclip.left, dstpt[0].y - rcclip.top },
+				{ dstpt[1].x - rcclip.left, dstpt[1].y - rcclip.top },
+				{ dstpt[5].x - rcclip.left, dstpt[5].y - rcclip.top },
+				{ dstpt[2].x - rcclip.left, dstpt[2].y - rcclip.top },
 			};
 
-			cv::Mat src_img;
+			tjs_int sw = src->GetWidth(), sh = src->GetHeight();
 			if (isSrcRect) {
 				tTVPRect rcsrc(0x7FFFFFFF, 0x7FFFFFFF, -1, -1);
 				for (int i = 0; i < 4; ++i) {
-					const cv::Point2f& pt = pts_src[i];
+					const tTVPPointD& pt = pts_src[i];
 					tjs_int x = pt.x;
 					if (x < rcsrc.left) rcsrc.left = x;
 					if (++x > rcsrc.right) rcsrc.right = x;
@@ -3221,59 +3373,31 @@ public:
 				}
 				sdata += rcsrc.top * spitch + rcsrc.left * 4;
 				for (int i = 0; i < 4; ++i) {
-					cv::Point2f& pt = pts_src[i];
+					tTVPPointD& pt = pts_src[i];
 					pt.x -= rcsrc.left;
 					pt.y -= rcsrc.top;
 				}
-				tjs_int sw = src->GetWidth(), sh = src->GetHeight();
 				if (rcsrc.get_width() > sw) rcsrc.set_width(sw);
 				if (rcsrc.get_height() > sh) rcsrc.set_height(sh);
-				src_img = cv::Mat(rcsrc.get_height(), rcsrc.get_width(), CV_8UC4,
-					(void*)sdata, spitch);
-			} else {
-				src_img = cv::Mat(src->GetHeight(), src->GetWidth(), CV_8UC4, (void*)sdata, spitch);
+				sw = rcsrc.get_width();
+				sh = rcsrc.get_height();
 			}
 
-			cv::Mat dst_img;
-			cv::Size dst_size(rcclip.get_width(), rcclip.get_height());
-#ifdef USE_CV_AFFINE
-			if (isSrcRect && checkQuadSquared(dstpt)) {
+			tjs_int dw = rcclip.get_width(), dh = rcclip.get_height();
+			std::vector<tjs_uint8> dstbuf((size_t)dw * dh * 4);
+			TVPWarpPerspectiveRGBA(sdata, spitch, sw, sh, &dstbuf[0], dw * 4, dw, dh,
+				pts_src, pts_dst, StretchType);
 // #ifdef _DEBUG
-// 				printf("affine (%d, %d;%d, %d;%d, %d;%d, %d) -> (%d, %d;%d, %d;%d, %d;%d, %d)\n",
+// 				printf("warp (%d, %d;%d, %d;%d, %d;%d, %d) -> (%d, %d;%d, %d;%d, %d;%d, %d)\n",
 // 					(int)pts_src[0].x, (int)pts_src[0].y, (int)pts_src[1].x, (int)pts_src[1].y,
 // 					(int)pts_src[2].x, (int)pts_src[2].y, (int)pts_src[3].x, (int)pts_src[3].y,
 // 					(int)pts_dst[0].x, (int)pts_dst[0].y, (int)pts_dst[1].x, (int)pts_dst[1].y,
 // 					(int)pts_dst[2].x, (int)pts_dst[2].y, (int)pts_dst[3].x, (int)pts_dst[3].y
 // 					);
 // #endif
-				cv::Mat affine_matrix = cv::getAffineTransform(pts_src, pts_dst);
-// 				double affine_check[6] = {
-// 					affine_matrix.at<double>(0, 0),
-// 					affine_matrix.at<double>(0, 1),
-// 					affine_matrix.at<double>(0, 2),
-// 					affine_matrix.at<double>(1, 0),
-// 					affine_matrix.at<double>(1, 1),
-// 					affine_matrix.at<double>(1, 2)
-// 				};
-				cv::warpAffine(src_img, dst_img, affine_matrix, dst_size, cvFlags[StretchType]);
-			}
-			else
-#endif
-			{
-// #ifdef _DEBUG
-// 				printf("perspective (%d, %d;%d, %d;%d, %d;%d, %d) -> (%d, %d;%d, %d;%d, %d;%d, %d)\n",
-// 					(int)pts_src[0].x, (int)pts_src[0].y, (int)pts_src[1].x, (int)pts_src[1].y,
-// 					(int)pts_src[2].x, (int)pts_src[2].y, (int)pts_src[3].x, (int)pts_src[3].y,
-// 					(int)pts_dst[0].x, (int)pts_dst[0].y, (int)pts_dst[1].x, (int)pts_dst[1].y,
-// 					(int)pts_dst[2].x, (int)pts_dst[2].y, (int)pts_dst[3].x, (int)pts_dst[3].y
-// 					);
-// #endif
-				cv::Mat perspective_matrix = cv::getPerspectiveTransform(pts_src, pts_dst);
-				cv::warpPerspective(src_img, dst_img, perspective_matrix, dst_size, cvFlags[StretchType]);
-			}
 
-			iTVPTexture2D *tmp = new tTVPSoftwareTexture2D_static(dst_img.ptr(0), dst_img.step1(0), dst_size.width, dst_size.height, TVPTextureFormat::RGBA);
-			tTVPRect rc(0, 0, dst_size.width, dst_size.height);
+			iTVPTexture2D *tmp = new tTVPSoftwareTexture2D_static(&dstbuf[0], dw * 4, dw, dh, TVPTextureFormat::RGBA);
+			tTVPRect rc(0, 0, dw, dh);
 // 			if (rc.right > dst->GetWidth()) rc.right = dst->GetWidth();
 // 			if (rc.bottom > dst->GetHeight()) rc.bottom = dst->GetHeight();
 
@@ -4332,27 +4456,27 @@ public:
 				const uint8_t *sdata;
 				int spitch = src->GetPitch();
 				sdata = (const uint8_t *)src->GetPixelData();
-				cv::Mat src_img(src->GetHeight(), src->GetWidth(), CV_8UC4, (void*)sdata, spitch);
-				cv::Mat dst_img;
-				cv::Size dst_size(rcclip.get_width(), rcclip.get_height());
+				tjs_int sw = src->GetWidth(), sh = src->GetHeight();
+				tjs_int dw = rcclip.get_width(), dh = rcclip.get_height();
 
 				// upper-left, upper-right, bottom-right, bottom-left
-				cv::Point2f pts_src[] = {
-					cv::Point2f(srcpt[0].x, srcpt[0].y),
-					cv::Point2f(srcpt[1].x + 1, srcpt[1].y),
-					cv::Point2f(srcpt[3].x + 1, srcpt[3].y + 1),
-					cv::Point2f(srcpt[2].x, srcpt[2].y + 1) };
-				cv::Point2f pts_dst[] = {
-					cv::Point2f(dstpt[0].x - rcclip.left, dstpt[0].y - rcclip.top),
-					cv::Point2f(dstpt[1].x - rcclip.left, dstpt[1].y - rcclip.top),
-					cv::Point2f(dstpt[3].x - rcclip.left, dstpt[3].y - rcclip.top),
-					cv::Point2f(dstpt[2].x - rcclip.left, dstpt[2].y - rcclip.top) };
+				tTVPPointD pts_src[] = {
+					{ srcpt[0].x, srcpt[0].y },
+					{ srcpt[1].x + 1, srcpt[1].y },
+					{ srcpt[3].x + 1, srcpt[3].y + 1 },
+					{ srcpt[2].x, srcpt[2].y + 1 } };
+				tTVPPointD pts_dst[] = {
+					{ dstpt[0].x - rcclip.left, dstpt[0].y - rcclip.top },
+					{ dstpt[1].x - rcclip.left, dstpt[1].y - rcclip.top },
+					{ dstpt[3].x - rcclip.left, dstpt[3].y - rcclip.top },
+					{ dstpt[2].x - rcclip.left, dstpt[2].y - rcclip.top } };
 
-				cv::Mat perspective_matrix = cv::getPerspectiveTransform(pts_src, pts_dst);
-				cv::warpPerspective(src_img, dst_img, perspective_matrix, dst_size, cvFlags[StretchType]);
+				std::vector<tjs_uint8> dstbuf((size_t)dw * dh * 4);
+				TVPWarpPerspectiveRGBA(sdata, spitch, sw, sh, &dstbuf[0], dw * 4, dw, dh,
+					pts_src, pts_dst, StretchType);
 
-				iTVPTexture2D *tmp = new tTVPSoftwareTexture2D_static(dst_img.ptr(0), dst_img.step1(0), dst_size.width, dst_size.height, TVPTextureFormat::RGBA);
-				tTVPRect rc(0, 0, dst_size.width, dst_size.height);
+				iTVPTexture2D *tmp = new tTVPSoftwareTexture2D_static(&dstbuf[0], dw * 4, dw, dh, TVPTextureFormat::RGBA);
+				tTVPRect rc(0, 0, dw, dh);
 
 				((tTVPRenderMethod_Software*)method)->DoRender(
 					target, rcclip,

@@ -1,7 +1,7 @@
 #include "IndividualConfigManager.h"
-#include "platform/CCFileUtils.h"
 #include "LocaleConfigManager.h"
 #include "Platform.h"
+#include "StorageImpl.h"
 
 #define FILENAME "Kirikiroid2Preference.xml"
 
@@ -24,7 +24,7 @@ void IndividualConfigManager::Clear()
 
 bool IndividualConfigManager::CheckExistAt(const std::string &folder) {
 	std::string fullpath = folder + "/" FILENAME;
-	return cocos2d::FileUtils::getInstance()->isFileExist(fullpath);
+	return TVPCheckExistentLocalFile(ttstr(fullpath.c_str()));
 }
 
 bool IndividualConfigManager::CreatePreferenceAt(const std::string &folder) {
@@ -51,7 +51,7 @@ bool IndividualConfigManager::UsePreferenceAt(const std::string &folder)
 	std::string fullpath = folder + "/" FILENAME;
 	if (CurrentPath == fullpath) return true;
 	Clear();
-	if (!cocos2d::FileUtils::getInstance()->isFileExist(fullpath)) return false;
+	if (!TVPCheckExistentLocalFile(ttstr(fullpath.c_str()))) return false;
 	CurrentPath = fullpath;
 	Initialize();
 	return true;

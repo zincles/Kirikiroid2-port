@@ -1,30 +1,20 @@
 #include "GlobalConfigManager.h"
 #include "tinyxml2/tinyxml2.h"
+#if !defined(TVP_SDL2)
 #include "platform/CCFileUtils.h"
+#endif
 #include "Platform.h"
 #include "UtilStreams.h"
 #include "LocaleConfigManager.h"
 
 bool TVPWriteDataToFile(const ttstr &filepath, const void *data, unsigned int len);
-class XMLMemPrinter : public tinyxml2::XMLPrinter {
-	tTVPMemoryStream _stream;
-	char _buffer[4096];
-public:
-	virtual void Print(const char* format, ...) override {
-		va_list param;
-		va_start(param, format);
-		int n = vsnprintf(_buffer, 4096, format, param);
-		va_end(param);
-		_stream.Write(_buffer, n);
-	}
-	void SaveFile(const std::string &path) {
-		if (!TVPWriteDataToFile(path, _stream.GetInternalBuffer(), _stream.GetSize())) {
-			TVPShowSimpleMessageBox(
-				LocaleConfigManager::GetInstance()->GetText("cannot_create_preference"),
-				LocaleConfigManager::GetInstance()->GetText("readonly_storage"));
-		}
-	}
-};
+
+// The document is printed into tinyxml2's own printer and handed to the engine's
+// storage layer.  (An earlier version subclassed XMLPrinter to capture the
+// output through its overridable Print(); that entry point only exists from
+// tinyxml2 7 on, while CStr()/CStrSize() have been the stable way to read the
+// printed XML back in every release, including the 6.0.0 devkitPro ships for
+// the Switch.)
 
 
 GlobalConfigManager::GlobalConfigManager() {
@@ -107,9 +97,15 @@ void iSysConfigManager::SaveToFile() {
 		}
 	}
 	doc.LinkEndChild(rootElement);
-	XMLMemPrinter stream;
+	tinyxml2::XMLPrinter stream;
 	doc.Print(&stream);
-	stream.SaveFile(GetFilePath());
+	// CStrSize() includes the terminating NUL.
+	const size_t stream_size = stream.CStrSize() ? stream.CStrSize() - 1 : 0;
+	if (!TVPWriteDataToFile(GetFilePath(), stream.CStr(), (unsigned int)stream_size)) {
+		TVPShowSimpleMessageBox(
+			LocaleConfigManager::GetInstance()->GetText("cannot_create_preference"),
+			LocaleConfigManager::GetInstance()->GetText("readonly_storage"));
+	}
 	ConfigUpdated = false;
 }
 

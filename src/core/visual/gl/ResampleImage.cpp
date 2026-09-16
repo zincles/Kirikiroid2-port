@@ -292,11 +292,7 @@ static void AxisParamCalculateAxis( TParam& param, int srcstart, int srcend, int
 		std::vector<float> work( maxrange, 0.0f );
 		float* weight = &work[0];
 		int length = (dstlength * maxrange + dstlength);
-#ifdef _DEBUG
 		param.weight_.resize( length );
-#else
-		param.weight_.reserve( length );
-#endif
 		typename TParam::weight_t* output = &param.weight_[0];
 		for( int x = 0; x < dstlength; x++ ) {
 			float cx = (x+0.5f)*(float)srclength/(float)dstlength + srcstart;
@@ -330,11 +326,7 @@ static void AxisParamCalculateAxis( TParam& param, int srcstart, int srcend, int
 		std::vector<float> work( maxrange, 0.0f );
 		float* weight = &work[0];
 		int length = (srclength * maxrange + srclength);
-#ifdef _DEBUG
 		param.weight_.resize( length );
-#else
-		param.weight_.reserve( length );
-#endif
 		typename TParam::weight_t* output = &param.weight_[0];
 		const float delta = (float)dstlength/(float)srclength; // 転送先座標での位置増分
 		for( int x = 0; x < dstlength; x++ ) {
@@ -468,12 +460,7 @@ public:
 	void ResampleImage( const tTVPResampleClipping &clip, const tTVPImageCopyFuncBase* blendfunc, iTVPBaseBitmap *dest, const tTVPRect &destrect, const iTVPBaseBitmap *src, const tTVPRect &srcrect ) {
 		const int srcwidth = srcrect.get_width();
 		const int dstheight = destrect.get_height();
-#ifdef _DEBUG
-		std::vector<tjs_uint32> work(srcwidth);
-#else
-		std::vector<tjs_uint32> work;
-		work.reserve( srcwidth );
-#endif
+		std::vector<tjs_uint32> work( srcwidth );
 		const float* wstarty = &paramy_.weight_[0];
 		// クリッピング部分スキップ
 		for( int y = 0; y < clip.offsety_; y++ ) {
@@ -489,12 +476,7 @@ public:
 				dstbits += dststride;
 			}
 		} else {	// 単純コピー以外は、一度テンポラリに書き出してから合成する
-#ifdef _DEBUG
-			std::vector<tjs_uint32> dstwork(clip.getDestWidth());
-#else
-			std::vector<tjs_uint32> dstwork;
-			dstwork.reserve( clip.getDestWidth() );
-#endif
+			std::vector<tjs_uint32> dstwork( clip.getDestWidth() );
 			tjs_uint32* midbits = &dstwork[0];	// 途中処理用バッファ
 			for( int y = clip.offsety_; y < clip.height_; y++ ) {
 				samplingVertical( y, workbits, dstheight, srcwidth, src, srcrect, wstarty );
@@ -613,12 +595,7 @@ public:
 void TJS_USERENTRY ResamplerFunc( void* p ) {
 	Resampler::ThreadParameter* param = (Resampler::ThreadParameter*)p;
 	const int width = param->width_;
-#ifdef _DEBUG
-	std::vector<tjs_uint32> work(width);
-#else
-	std::vector<tjs_uint32> work;
-	work.reserve( width );
-#endif
+	std::vector<tjs_uint32> work( width );
 
 	iTVPBaseBitmap* dest = param->dest_;
 	const tTVPRect& destrect = *param->destrect_;
@@ -639,12 +616,7 @@ void TJS_USERENTRY ResamplerFunc( void* p ) {
 			dstbits += dststride;
 		}
 	} else {	// 単純コピー以外
-#ifdef _DEBUG
-		std::vector<tjs_uint32> dstwork(param->clip_->getDestWidth());
-#else
-		std::vector<tjs_uint32> dstwork;
-		dstwork.reserve( param->clip_->getDestWidth() );
-#endif
+		std::vector<tjs_uint32> dstwork( param->clip_->getDestWidth() );
 		tjs_uint32* midbits = &dstwork[0];	// 途中処理用バッファ
 		for( int y = param->start_; y < param->end_; y++ ) {
 			param->sampler_->samplingVertical( y, workbits, dstheight, srcwidth, src, srcrect, wstarty );

@@ -1,0 +1,165 @@
+// Kirikiroid2 SDL2 port - smoke test game.
+//
+// Run with:  ./build/krkr2 tests/smoke-game
+//
+// Exercises the parts a bare "does it compile" check cannot: the TJS2 script
+// engine, the storage layer, font enumeration/FreeType rasterisation, layer
+// composition through the software render manager, and the SDL present path.
+// The window shows a test pattern and the console logs the pixel values the
+// engine composed, then the process exits by itself after 300 frames.
+
+Debug.message("krkr2 smoke test: script engine started");
+
+// The engine exposes "Window" as the window *class*; the main window object is
+// created by the host script (KAG does the same in its startup).
+var win = new Window();
+win.setInnerSize(640, 480);
+win.visible = true;
+
+// Constructing a Layer on the window creates that window's primary layer and
+// its layer manager (this is also what makes win.primaryLayer valid).
+var layer = new Layer(win, null);   // owner = window, no parent => primary layer
+layer.setSize(640, 480);
+layer.fillRect(0, 0, 640, 480, 0x203040);
+layer.drawText(24, 40, "Kirikiroid2 - Linux/SDL2 port", 0xffffff);
+layer.drawText(24, 80, "rendering through the software renderer", 0x9fe0ff);
+layer.drawText(24, 140, "platform: " + System.platformName, 0xffffff);
+layer.drawText(24, 170, "os: " + System.osName, 0xc0ffc0);
+layer.drawText(24, 200, "engine: " + System.versionString, 0xffffff);
+layer.drawText(24, 260, "this window closes itself after 300 frames", 0xffc080);
+
+// Composite check: read the composed layer back through the script API so the
+// log shows whether the software renderer produced the expected colours
+// (background 0x203040, white text pixels somewhere in the first text row).
+Debug.message("smoke: background pixel = " + layer.getMainPixel(600, 460));
+Debug.message("smoke: text row has ink = "
+	+ (layer.getMainPixel(30, 50) != layer.getMainPixel(600, 460)));
+
+layer.setPos(0, 0);
+layer.visible = true;
+
+var frames = 0;
+System.addContinuousHandler(function(tick) {
+	frames++;
+	if (frames == 60) Debug.message("smoke: 60 frames delivered");
+	if (frames >= 300) {
+		Debug.message("smoke: done, exiting");
+		System.exit();
+	}
+});
+
+// Closing the window must also terminate cleanly.
+win.onCloseQuery = function() {
+	Debug.message("smoke: onCloseQuery");
+	return true;
+};
+
+// Input path: the window's action events, fired by the engine from the input
+// events the SDL layer posts (keyboard via xdotool/SDL_TEXTINPUT, mouse).
+win.onKeyDown = function(key, shift) {
+	Debug.message("smoke: onKeyDown key=" + key);
+};
+win.onKeyUp = function(key, shift) {
+	Debug.message("smoke: onKeyUp key=" + key);
+};
+win.onClick = function(x, y) {
+	Debug.message("smoke: onClick " + x + "," + y);
+};
+
+// Audio path: decode each format the build supports through the engine's mixer.
+// Formats whose decoder is not compiled in are reported and skipped, so this
+// doubles as a capability probe.
+var files = ["tone.wav", "tone.ogg", "tone.mp3"];
+var snd = new WaveSoundBuffer(win);
+for (var i = 0; i < files.length; ++i) {
+	try {
+		snd.open(files[i]);
+		snd.play();
+		Debug.message("smoke: " + files[i] + " status=" + snd.status
+			+ " freq=" + snd.frequency + " ch=" + snd.channels);
+		snd.stop();
+	} catch (e) {
+		Debug.message("smoke: " + files[i] + " FAILED: " + e.message);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Movie path (the OP/ED videos a game plays): decode through the ffmpeg
+// VideoOverlay player.
+//
+// Mode 1 is "layer": the engine hands the player two 32bpp textures and, for
+// every EC_UPDATE event the player posts, takes GetFrontBuffer() as layer1's
+// main image - so the pixels sampled below are exactly what the player
+// decoded, converted and published.  The whole section sits in a try/catch so
+// a build without movie support reports "not supported" and the rest of the
+// smoke test still runs.
+// ---------------------------------------------------------------------------
+var mov = null;
+var movLayer = null;
+var movStage = 0;
+var movStatus = "(none)";
+
+try {
+	movLayer = new Layer(win, layer);   // child layer of the primary one
+	movLayer.setSize(320, 240);
+	movLayer.setPos(0, 0);
+	movLayer.visible = true;
+
+	mov = new VideoOverlay(win);
+	mov.mode = 1;                       // vomLayer
+	mov.layer1 = movLayer;
+	mov.onStatusChanged = function(status) { movStatus = status; };
+	mov.open("movie.mp4");
+	Debug.message("smoke: movie opened: " + mov.originalWidth + "x" + mov.originalHeight
+		+ " fps=" + mov.fps + " frames=" + mov.numberOfFrame
+		+ " totalTime=" + mov.totalTime + "ms videoStreams=" + mov.numberOfVideoStream
+		+ " audioStreams=" + mov.numberOfAudioStream
+		+ " audioVolume=" + mov.audioVolume);
+	mov.play();
+	Debug.message("smoke: movie status after play=" + movStatus + " (engine status)");
+	movStage = 1;
+} catch (e) {
+	mov = null;
+	Debug.message("smoke: movie NOT SUPPORTED: " + e.message);
+}
+
+// mean colour of the layer the engine fed the front buffer into
+function smokeMovieMeanRgb(l) {
+	var sr = 0, sg = 0, sb = 0, n = 0;
+	for (var y = 8; y < 236; y += 24) {
+		for (var x = 8; x < 316; x += 24) {
+			var c = l.getMainPixel(x, y);
+			sr += (c >> 16) & 255;
+			sg += (c >> 8) & 255;
+			sb += c & 255;
+			n++;
+		}
+	}
+	return Math.floor(sr / n) + "," + Math.floor(sg / n) + "," + Math.floor(sb / n);
+}
+
+function smokeMovieTick() {
+	if (mov == null) return;
+	if (movStage == 1 && mov.position >= 700) {
+		Debug.message("smoke: movie playing: status=" + movStatus + " position=" + mov.position
+			+ "ms frame=" + mov.frame + " frontBufferMeanRGB=" + smokeMovieMeanRgb(movLayer));
+		mov.position = 1000;            // seek to 1.0s
+		Debug.message("smoke: movie seek to 1000ms: position=" + mov.position
+			+ "ms frame=" + mov.frame);
+		movStage = 2;
+	} else if (movStage == 2 && mov.position > 1050) {
+		Debug.message("smoke: movie after seek: status=" + movStatus + " position="
+			+ mov.position + "ms frame=" + mov.frame);
+		mov.pause();
+		movStage = 3;
+	} else if (movStage == 3) {
+		Debug.message("smoke: movie after pause: status=" + movStatus + " position=" + mov.position);
+		mov.stop();
+		movStage = 4;
+	} else if (movStage == 4) {
+		Debug.message("smoke: movie after stop: status=" + movStatus + " position=" + mov.position
+			+ "ms frame=" + mov.frame);
+		movStage = 5;
+	}
+}
+System.addContinuousHandler(function(tick) { smokeMovieTick(); });

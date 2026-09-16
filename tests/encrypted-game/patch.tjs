@@ -1,0 +1,17 @@
+// ---------------------------------------------------------------------------
+// patch.tjs -- engine startup patch, loaded by TVPExecuteStartupScript()
+// (src/core/base/ScriptMgnIntf.cpp) from "<app path>/patch.tjs", i.e. from the
+// directory that holds the game archive, before startup.tjs is executed.
+//
+// This is the same slot the patch library's patch.tjs occupies.  For this
+// fixture it only has to be observable: the interesting work (registering the
+// XP3 decode filter) is done by the sibling xp3filter.tjs, which the
+// xp3filter plugin loads on its own.
+//
+// Note this file is *not* inside the archive: when an archive is passed on the
+// command line, the app path is the directory containing it (the engine's
+// TVPProjectDir is the archive path, and TVPGetAppPath() -> TVPExtractStoragePath()
+// of that yields the archive's directory).
+// ---------------------------------------------------------------------------
+Debug.message("patch: patch.tjs executed; startup storage = "
+	+ Storages.getPlacedPath("startup.tjs"));

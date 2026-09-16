@@ -1,0 +1,17 @@
+// Kirikiroid2 SDL2 port - input box regression game for the dialog refactor.
+//
+// Run with:  ./build/krkr2 tests/file-selector/inputbox
+//
+// System.inputString(caption, prompt, initial) is the script-visible path to
+// TVPShowSimpleInputBox() (base/SystemIntf.cpp) -- the modal dialog whose text
+// rendering, caret, IME and text-input handling now come from the shared
+// SDLDialog module.  The dialog returns 0 for its left ("OK") button and the
+// edited string is the function's result.
+
+Debug.message("filesel-test: inputbox start");
+
+var value = System.inputString("Input box regression", "Type something:", "initial-");
+Debug.message("filesel-test: inputString returned \"" + value + "\"");
+
+Debug.message("filesel-test: done");
+System.exit();

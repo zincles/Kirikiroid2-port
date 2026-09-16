@@ -1,0 +1,20 @@
+// Kirikiroid2 SDL2 port - file selector test game (save mode).
+//
+// Run with:  ./build/krkr2 tests/file-selector/save
+//
+// save:true makes the dialog show its name line, seeded with the base name of
+// the `name` argument; the typed name comes back as a full path in d.name.
+// The name carries a path so the selector starts in ./fixtures, as it does in
+// open mode.
+
+Debug.message("filesel-test: save mode start");
+
+var d = new Dictionary();
+d.title = "Save a file";
+d.name = "./fixtures/default.dat";
+d.save = true;
+var ok = Storages.selectFile(d);
+Debug.message("filesel-test: save call returned " + ok + " name=" + d.name);
+
+Debug.message("filesel-test: done");
+System.exit();

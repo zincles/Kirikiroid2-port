@@ -1,22 +1,31 @@
 #include "LocaleConfigManager.h"
-#include "CCFileUtils.h"
 #include "GlobalConfigManager.h"
 #include "tinyxml2/tinyxml2.h"
+#include "BinaryStream.h"
+#include "StorageIntf.h"
+#include "DebugIntf.h"
+#if !defined(TVP_SDL2)
 #include "ui/UIText.h"
 #include "ui/UIButton.h"
+#endif
 
 LocaleConfigManager::LocaleConfigManager() {
 
 }
 
 std::string LocaleConfigManager::GetFilePath() {
-	std::string pathprefix = "locale/"; // constant file in app package
-	std::string fullpath = pathprefix + currentLangCode + ".xml"; // exp. "local/en_us.xml"
-	if (!cocos2d::FileUtils::getInstance()->isFileExist(fullpath)) {
+	// The language file is a constant of the app package, so it is reached
+	// through the engine's storage search paths instead of a fixed file name.
+	// Returns the placed storage name, or an empty string when not even the
+	// default language file is available.
+	std::string fullpath = "locale/" + currentLangCode + ".xml"; // exp. "locale/en_us.xml"
+	ttstr placed = TVPGetPlacedPath(ttstr(fullpath.c_str()));
+	if (placed.IsEmpty()) {
 		currentLangCode = "en_us"; // restore to default language config(must exist)
-		return GetFilePath();
+		fullpath = "locale/" + currentLangCode + ".xml";
+		placed = TVPGetPlacedPath(ttstr(fullpath.c_str()));
 	}
-	return cocos2d::FileUtils::getInstance()->fullPathForFilename(fullpath);
+	return placed.AsNarrowStdString();
 }
 
 LocaleConfigManager* LocaleConfigManager::GetInstance() {
@@ -38,12 +47,27 @@ void LocaleConfigManager::Initialize(const std::string &sysLang) {
 	currentLangCode = GlobalConfigManager::GetInstance()->GetValue<std::string>("user_language", "");
 	if (currentLangCode.empty()) currentLangCode = sysLang;
 	AllConfig.clear();
+	std::string path = GetFilePath();
+	if (path.empty()) {
+		// no locale file at all: GetText() then returns the message ids, the
+		// same fallback the previous file utils based code produced for an
+		// unreadable file.
+		TVPAddLog(ttstr(("LocaleConfigManager: locale/" + currentLangCode + ".xml not found").c_str()));
+		return;
+	}
+	std::string xmlData;
+	{
+		tTJSBinaryStream *stream = TVPCreateBinaryStreamForRead(ttstr(path.c_str()), TJS_W(""));
+		tjs_uint64 size = stream->GetSize();
+		xmlData.resize(static_cast<std::string::size_type>(size));
+		if (size) stream->Read(&xmlData[0], static_cast<tjs_uint>(size));
+		delete stream;
+	}
 	tinyxml2::XMLDocument doc;
-	std::string xmlData = cocos2d::FileUtils::getInstance()->getStringFromFile(GetFilePath());
 	bool _writeBOM = false;
 	const char* p = xmlData.c_str();
 	p = tinyxml2::XMLUtil::ReadBOM(p, &_writeBOM);
-	doc.ParseDeep((char*)p, nullptr);
+	doc.Parse(p);
 	tinyxml2::XMLElement *rootElement = doc.RootElement();
 	if (rootElement) {
 		for (tinyxml2::XMLElement *item = rootElement->FirstChildElement(); item; item = item->NextSiblingElement()) {
@@ -56,6 +80,7 @@ void LocaleConfigManager::Initialize(const std::string &sysLang) {
 	}
 }
 
+#if !defined(TVP_SDL2)
 bool LocaleConfigManager::initText(cocos2d::ui::Text *ctrl) {
 	if (!ctrl) return false;
 	return initText(ctrl, ctrl->getString());
@@ -94,4 +119,4 @@ bool LocaleConfigManager::initText(cocos2d::ui::Button *ctrl, const std::string 
 	ctrl->setTitleText(txt);
 	return true;
 }
-
+#endif // !defined(TVP_SDL2)
