@@ -804,21 +804,7 @@ std::vector<ScriptedStep> &ScriptedSteps()
 				continue;
 			}
 			if (head == "pad" || head == "padbutton") {
-				std::transform(payload.begin(), payload.end(), payload.begin(),
-					::tolower);
-				Uint8 button = 0xFF;
-				if (payload == "a") button = SDL_CONTROLLER_BUTTON_A;
-				else if (payload == "b") button = SDL_CONTROLLER_BUTTON_B;
-				else if (payload == "x") button = SDL_CONTROLLER_BUTTON_X;
-				else if (payload == "y") button = SDL_CONTROLLER_BUTTON_Y;
-				else if (payload == "up") button = SDL_CONTROLLER_BUTTON_DPAD_UP;
-				else if (payload == "down") button = SDL_CONTROLLER_BUTTON_DPAD_DOWN;
-				else if (payload == "left") button = SDL_CONTROLLER_BUTTON_DPAD_LEFT;
-				else if (payload == "right") button = SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
-				else if (payload == "start") button = SDL_CONTROLLER_BUTTON_START;
-				else if (payload == "back") button = SDL_CONTROLLER_BUTTON_BACK;
-				else if (payload == "lb") button = SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
-				else if (payload == "rb") button = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+				const Uint8 button = krkr2sdl::HostGamePadButtonByName(payload);
 				if (button == 0xFF) {
 					TVPPrintLog(("dialog: KRKR2_DIALOG_KEYS: unknown game pad "
 						"button '" + payload + "'").c_str());

@@ -276,6 +276,28 @@ void TVPSDLWindowLayer::WindowToLayer(tjs_int wx, tjs_int wy, tjs_int &lx, tjs_i
 	TranslateWindowToLayer(wx, wy, lx, ly);
 }
 
+//---------------------------------------------------------------------------
+// Touch
+//---------------------------------------------------------------------------
+void TVPSDLWindowLayer::FingerToWindow(const SDL_TouchFingerEvent &f,
+	tjs_int &wx, tjs_int &wy) const
+{
+	// tfinger carries the position normalised over the window (0..1), which is
+	// what a touch device reports; everything else in this class works in window
+	// pixels.  Values are clamped so a finger that drifted outside the window
+	// during a drag still lands on it.
+	tjs_int w = 0, h = 0;
+	const_cast<TVPSDLWindowLayer *>(this)->GetWinSize(w, h);
+	if (w <= 0) w = 1;
+	if (h <= 0) h = 1;
+	wx = (tjs_int)(f.x * (float)w);
+	wy = (tjs_int)(f.y * (float)h);
+	if (wx < 0) wx = 0;
+	if (wx >= w) wx = w - 1;
+	if (wy < 0) wy = 0;
+	if (wy >= h) wy = h - 1;
+}
+
 void TVPSDLWindowLayer::GetDrawArea(tjs_int &left, tjs_int &top, tjs_int &width, tjs_int &height) const
 {
 	left = DestLeft;
@@ -1076,10 +1098,53 @@ void TVPSDLWindowLayer::HandleSDLEvent(const SDL_Event &e)
 		break;
 
 	case SDL_MOUSEMOTION:
-		layer->OnMouseMove(layer, e.motion.x, e.motion.y);
+		// Ignore the mouse events SDL synthesises from touch when the platform
+		// also delivers finger events (see SDL_FINGERDOWN below): the tap would
+		// otherwise be handled twice.
+		if (e.motion.which != SDL_TOUCH_MOUSEID || SDL_GetNumTouchDevices() == 0)
+			layer->OnMouseMove(layer, e.motion.x, e.motion.y);
 		break;
 
+	case SDL_FINGERDOWN: {
+		// Touch input becomes mouse input: the engine's windows only take mouse
+		// events, and a tap is how a game is driven on a touchscreen (the Switch
+		// in handheld mode, phones, tablets).  Only the first finger is
+		// translated; while it is down, its moves drag the cursor.
+		if (layer->ActiveTouchFinger != 0) break;
+		layer->ActiveTouchFinger = e.tfinger.fingerId;
+		tjs_int wx = 0, wy = 0;
+		layer->FingerToWindow(e.tfinger, wx, wy);
+		tjs_int lx = 0, ly = 0;
+		layer->TranslateWindowToLayer(wx, wy, lx, ly);
+		layer->LastMouseX = lx;
+		layer->LastMouseY = ly;
+		layer->PostMouseDown(mbLeft, lx, ly);
+		break;
+	}
+
+	case SDL_FINGERMOTION: {
+		if (e.tfinger.fingerId != layer->ActiveTouchFinger) break;
+		tjs_int wx = 0, wy = 0;
+		layer->FingerToWindow(e.tfinger, wx, wy);
+		layer->OnMouseMove(layer, wx, wy);
+		break;
+	}
+
+	case SDL_FINGERUP: {
+		if (e.tfinger.fingerId != layer->ActiveTouchFinger) break;
+		layer->ActiveTouchFinger = 0;
+		tjs_int wx = 0, wy = 0;
+		layer->FingerToWindow(e.tfinger, wx, wy);
+		tjs_int lx = 0, ly = 0;
+		layer->TranslateWindowToLayer(wx, wy, lx, ly);
+		layer->LastMouseX = lx;
+		layer->LastMouseY = ly;
+		layer->PostMouseUp(mbLeft, lx, ly);
+		break;
+	}
+
 	case SDL_MOUSEBUTTONDOWN: {
+		if (e.button.which == SDL_TOUCH_MOUSEID && SDL_GetNumTouchDevices() > 0) break;
 		tjs_int lx = 0, ly = 0;
 		layer->TranslateWindowToLayer(e.button.x, e.button.y, lx, ly);
 		layer->LastMouseX = lx;
@@ -1096,6 +1161,7 @@ void TVPSDLWindowLayer::HandleSDLEvent(const SDL_Event &e)
 	}
 
 	case SDL_MOUSEBUTTONUP: {
+		if (e.button.which == SDL_TOUCH_MOUSEID && SDL_GetNumTouchDevices() > 0) break;
 		tjs_int lx = 0, ly = 0;
 		layer->TranslateWindowToLayer(e.button.x, e.button.y, lx, ly);
 		layer->LastMouseX = lx;
@@ -1181,7 +1247,10 @@ void TVPSDLWindowLayer::HandleSDLEvent(const SDL_Event &e)
 
 	case SDL_CONTROLLERBUTTONDOWN: {
 		tjs_uint vk = SDLGameControllerButtonToVK((Uint8)e.cbutton.button);
-		if (!vk || vk >= 0x200) break;
+		// Only 0 means "no mapping": the KiriKiri game-pad codes this produces
+		// (VK_PAD*, 0x1B0-0x1C9, tvpinputdefs.h) are above 0x200, and the guard
+		// used to be `vk >= 0x200`, so no pad button ever reached the engine.
+		if (!vk) break;
 		krkr2sdl::HostSetKeyState(vk, true);
 		layer->InternalKeyDown((tjs_uint16)vk,
 			(tjs_uint32)GetShiftState() | (tjs_uint32)layer->GetMouseButtonShiftState());
@@ -1190,7 +1259,7 @@ void TVPSDLWindowLayer::HandleSDLEvent(const SDL_Event &e)
 
 	case SDL_CONTROLLERBUTTONUP: {
 		tjs_uint vk = SDLGameControllerButtonToVK((Uint8)e.cbutton.button);
-		if (!vk || vk >= 0x200) break;
+		if (!vk) break;
 		bool is_pressed = krkr2sdl::HostGetKeyState(vk, true);
 		krkr2sdl::HostSetKeyState(vk, false);
 		if (is_pressed) layer->OnKeyUp((tjs_uint16)vk, GetShiftState());

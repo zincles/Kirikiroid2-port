@@ -90,6 +90,11 @@ run "xp3-encrypted"     60 - "smoke: done"            -- "$binary" tests/encrypt
 grep -q "tone.mp3 status=play" "$work/xp3-encrypted.log" || echo "note: audio did not play from the encrypted archive"
 run "7z"                60 - "smoke: done"            -- "$binary" tests/7z-game/game.7z
 run "layer-ex-movie"    60 - "layerExMovie: done"     -- "$binary" tests/layer-ex-movie
+# Touch and game-pad input, replayed by the host's scripted input (KRKR2_TEST_INPUT,
+# src/core/environ/sdl/Host.h): two taps, a drag and a pad button.
+run "touch-input"       60 - "touch-input: done"      -- env \
+	KRKR2_TEST_INPUT="40:fingerdown:100,60;45:fingermove:160,90;50:fingerup:160,90;60:fingerdown:200,120;64:fingerup:200,120;80:pad:a;95:padup:a" \
+	"$binary" tests/touch-input
 run "file-selector-open"  40 - "call 1 returned 1"    -- env KRKR2_DIALOG_KEYS=down,enter "$binary" tests/file-selector/open
 run "file-selector-cancel" 40 - "call 1 returned 0"   -- env KRKR2_DIALOG_KEYS=esc,esc "$binary" tests/file-selector/open
 

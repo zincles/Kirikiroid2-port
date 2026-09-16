@@ -283,6 +283,202 @@ void HostRecycleTextures()
 	iTVPTexture2D::RecycleProcess();
 }
 
+//---------------------------------------------------------------------------
+// Scripted input (KRKR2_TEST_INPUT) - see Host.h
+//---------------------------------------------------------------------------
+namespace {
+
+struct TestInputStep
+{
+	int Frame = 0;
+	SDL_EventType Type = SDL_FIRSTEVENT; // a finger event, or SDL_FIRSTEVENT for a pad action
+	int X = 0, Y = 0;
+	Uint8 Button = 0xFF;
+	bool Down = true;
+	bool IsPad = false;
+};
+
+std::vector<TestInputStep> g_test_input;
+bool g_test_input_read = false;
+SDL_GameController *g_test_pad = nullptr;
+
+std::string TrimBlanks(const std::string &s)
+{
+	size_t b = 0, e = s.size();
+	while (b < e && (s[b] == ' ' || s[b] == '\t')) b++;
+	while (e > b && (s[e - 1] == ' ' || s[e - 1] == '\t')) e--;
+	return s.substr(b, e - b);
+}
+
+std::string ToLowerCopy(std::string s)
+{
+	std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+	return s;
+}
+
+void ParseTestInput()
+{
+	g_test_input_read = true;
+
+	const char *env = getenv("KRKR2_TEST_INPUT");
+	if (!env || !*env) return;
+
+	const std::string script(env);
+	size_t pos = 0;
+	while (pos <= script.size()) {
+		const size_t semi = script.find(';', pos);
+		std::string item = TrimBlanks(semi == std::string::npos
+			? script.substr(pos) : script.substr(pos, semi - pos));
+		pos = (semi == std::string::npos) ? script.size() + 1 : semi + 1;
+		if (item.empty()) continue;
+
+		const size_t c1 = item.find(':');
+		if (c1 == std::string::npos) {
+			TVPPrintLog(("test input: ignoring '" + item +
+				"' (want <frame>:<action>[:<payload>])").c_str());
+			continue;
+		}
+		TestInputStep step;
+		step.Frame = atoi(item.substr(0, c1).c_str());
+		const std::string rest = item.substr(c1 + 1);
+		const size_t c2 = rest.find(':');
+		const std::string head = ToLowerCopy(c2 == std::string::npos
+			? rest : rest.substr(0, c2));
+		const std::string payload = (c2 == std::string::npos)
+			? std::string() : rest.substr(c2 + 1);
+
+		if (head == "fingerdown" || head == "fingermove" || head == "fingerup") {
+			const size_t comma = payload.find(',');
+			if (comma == std::string::npos) {
+				TVPPrintLog(("test input: ignoring '" + item +
+					"' (want <frame>:<action>:x,y)").c_str());
+				continue;
+			}
+			step.X = atoi(payload.substr(0, comma).c_str());
+			step.Y = atoi(payload.substr(comma + 1).c_str());
+			step.Type = (head == "fingerdown") ? SDL_FINGERDOWN
+				: (head == "fingermove") ? SDL_FINGERMOTION : SDL_FINGERUP;
+		} else if (head == "mousedown" || head == "mouseup") {
+			// The same positions as real mouse input, so a test can compare what
+			// the touch translation produces with what a mouse produces.
+			const size_t comma = payload.find(',');
+			if (comma == std::string::npos) {
+				TVPPrintLog(("test input: ignoring '" + item +
+					"' (want <frame>:<action>:x,y)").c_str());
+				continue;
+			}
+			step.X = atoi(payload.substr(0, comma).c_str());
+			step.Y = atoi(payload.substr(comma + 1).c_str());
+			step.Type = (head == "mousedown") ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
+		} else if (head == "pad" || head == "padup") {
+			step.IsPad = true;
+			step.Down = (head == "pad");
+			step.Button = HostGamePadButtonByName(payload);
+			if (step.Button == 0xFF) {
+				TVPPrintLog(("test input: unknown game pad button '" + payload + "'").c_str());
+				continue;
+			}
+		} else {
+			TVPPrintLog(("test input: unknown action '" + head + "'").c_str());
+			continue;
+		}
+		g_test_input.push_back(step);
+	}
+
+	TVPPrintLog(("test input: " + std::to_string(g_test_input.size()) +
+		" scripted event(s) from KRKR2_TEST_INPUT").c_str());
+}
+
+} // namespace
+
+Uint8 HostGamePadButtonByName(const std::string &name)
+{
+	std::string n(name);
+	std::transform(n.begin(), n.end(), n.begin(), ::tolower);
+	if (n == "a") return SDL_CONTROLLER_BUTTON_A;
+	if (n == "b") return SDL_CONTROLLER_BUTTON_B;
+	if (n == "x") return SDL_CONTROLLER_BUTTON_X;
+	if (n == "y") return SDL_CONTROLLER_BUTTON_Y;
+	if (n == "up") return SDL_CONTROLLER_BUTTON_DPAD_UP;
+	if (n == "down") return SDL_CONTROLLER_BUTTON_DPAD_DOWN;
+	if (n == "left") return SDL_CONTROLLER_BUTTON_DPAD_LEFT;
+	if (n == "right") return SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
+	if (n == "start") return SDL_CONTROLLER_BUTTON_START;
+	if (n == "back") return SDL_CONTROLLER_BUTTON_BACK;
+	if (n == "lb") return SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
+	if (n == "rb") return SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+	return 0xFF;
+}
+
+void HostInitTestInput()
+{
+	if (!g_test_input_read) ParseTestInput();
+	if (g_test_input.empty()) return;
+
+	bool wants_pad = false;
+	for (const TestInputStep &step : g_test_input)
+		if (step.IsPad) wants_pad = true;
+	if (!wants_pad) return;
+
+	// A virtual controller, so the button presses travel SDL's own controller
+	// path (attach -> open -> set button -> SDL_CONTROLLERBUTTONDOWN) instead of
+	// being pushed as pre-made events.
+	if (SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, 4, 15, 0) < 0) {
+		TVPPrintLog(("test input: cannot attach a virtual controller: " +
+			std::string(SDL_GetError())).c_str());
+		return;
+	}
+	for (int i = 0; i < SDL_NumJoysticks(); i++) {
+		if (!SDL_IsGameController(i)) continue;
+		g_test_pad = SDL_GameControllerOpen(i);
+		if (g_test_pad) break;
+	}
+	if (!g_test_pad)
+		TVPPrintLog(("test input: the virtual controller did not open: " +
+			std::string(SDL_GetError())).c_str());
+}
+
+void HostPumpTestInput(int frame)
+{
+	if (!g_test_input_read) return; // nothing scripted: no per-frame work
+	if (g_test_input.empty()) return;
+
+	tjs_int w = 0, h = 0;
+	HostGetWindowSize(w, h);
+	if (w <= 0) w = 1;
+	if (h <= 0) h = 1;
+
+	for (const TestInputStep &step : g_test_input) {
+		if (step.Frame != frame) continue;
+		if (step.IsPad) {
+			if (g_test_pad)
+				SDL_JoystickSetVirtualButton(SDL_GameControllerGetJoystick(g_test_pad),
+					step.Button, step.Down ? SDL_PRESSED : SDL_RELEASED);
+			continue;
+		}
+		SDL_Event e;
+		SDL_zero(e);
+		e.type = step.Type;
+		if (step.Type == SDL_FINGERDOWN || step.Type == SDL_FINGERMOTION ||
+			step.Type == SDL_FINGERUP) {
+			e.tfinger.type = step.Type;
+			e.tfinger.touchId = 0;
+			e.tfinger.fingerId = 1; // the window layer translates the first finger
+			e.tfinger.x = (float)step.X / (float)w;
+			e.tfinger.y = (float)step.Y / (float)h;
+			e.tfinger.pressure = 1.0f;
+		} else {
+			e.button.type = step.Type;
+			e.button.button = SDL_BUTTON_LEFT;
+			e.button.state = (step.Type == SDL_MOUSEBUTTONDOWN) ? SDL_PRESSED : SDL_RELEASED;
+			e.button.clicks = 1;
+			e.button.x = step.X;
+			e.button.y = step.Y;
+		}
+		SDL_PushEvent(&e);
+	}
+}
+
 } // namespace krkr2sdl
 
 //---------------------------------------------------------------------------

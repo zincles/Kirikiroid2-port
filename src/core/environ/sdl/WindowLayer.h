@@ -126,6 +126,9 @@ private:
 	void PostMouseUp(tTVPMouseButton button, tjs_int lx, tjs_int ly);
 	void PostMouseClick(tTVPMouseButton button, tjs_int lx, tjs_int ly);
 	void GenerateMouseEvent(bool left, bool right, bool up, bool down);
+	// Finger coordinates are normalised over the window; the engine's input is
+	// mouse input, so a touch becomes a left-button press at the same place.
+	void FingerToWindow(const SDL_TouchFingerEvent &f, tjs_int &wx, tjs_int &wy) const;
 
 	// ------------------------------------------------------------------
 	// state
@@ -168,6 +171,9 @@ private:
 	bool UseMouseKey = false;
 	tjs_int MouseKeyXAccel = 0, MouseKeyYAccel = 0;
 	VelocityTracker MouseVelocityTracker;
+	// The finger currently translated into mouse input (0: none).  A second
+	// finger is a pinch, not a click, so it is ignored.
+	SDL_FingerID ActiveTouchFinger = 0;
 	VelocityTrackers TouchVelocityTracker;
 
 	// ime / cursor

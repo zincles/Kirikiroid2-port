@@ -1,0 +1,91 @@
+// Behaviour game: touch input and game-pad input.
+//
+// The engine's windows take mouse and key input, so a touchscreen tap has to
+// become a mouse click and a pad button a VK_PAD* key.  Neither a touchscreen nor
+// a pad exists on the machine that builds this, so the events are replayed by the
+// host's scripted input (KRKR2_TEST_INPUT, src/core/environ/sdl/Host.h):
+//
+//   KRKR2_TEST_INPUT="40:fingerdown:100,60;44:fingerup:100,60;60:pad:a;70:padup:a"
+//
+// The finger events are pushed exactly as a touch device delivers them
+// (SDL_FINGER*, normalised over the window) and the pad presses go through a
+// virtual SDL controller, so what this game checks is the port's mapping:
+//
+//   * a tap arrives as a left-button mouse down and up at the same layer point,
+//     at two different points, so the coordinate translation is exercised rather
+//     than just "an event arrived";
+//   * a drag in between arrives as a mouse move;
+//   * a pad button arrives as the KiriKiri game-pad key (VK_PAD1 = 448) and is
+//     visible through System.getKeyState() while it is held.
+//
+// What this cannot check is SDL's device layer itself (a real controller or
+// touch panel), which needs the hardware.
+
+var win = new Window();
+win.setInnerSize(320, 240);
+var layer = new Layer(win, null);
+layer.setSize(320, 240);
+layer.visible = true;
+// An invisible window delivers no events at all (the engine asks
+// CanDeliverEvents(), which is "visible and enabled"), and a game makes its
+// window visible before it starts, so the same is done here.
+win.visible = true;
+
+var events = "";
+var downCount = 0, upCount = 0, moveCount = 0;
+var tap1 = "", tap2 = "", drag = "";
+var padDownKey = -1, padStateWhileHeld = -1, padUpKey = -1;
+
+win.onMouseDown = function(x, y, button, shift) {
+	downCount++;
+	if (downCount == 1) tap1 = x + "," + y;
+	else if (downCount == 2) tap2 = x + "," + y;
+};
+win.onMouseUp = function(x, y, button, shift) { upCount++; };
+win.onMouseMove = function(x, y, shift) {
+	moveCount++;
+	if (drag == "" && x > 120) drag = x + "," + y;
+};
+win.onKeyDown = function(key, shift) {
+	if (padDownKey < 0) {
+		padDownKey = key;
+		padStateWhileHeld = System.getKeyState(key) ? 1 : 0;
+	}
+};
+win.onKeyUp = function(key, shift) { if (padUpKey < 0) padUpKey = key; };
+
+var problems = [];
+function bad(msg) { problems.push(msg); Debug.message("touch-input: PROBLEM " + msg); }
+
+// The window has to exist and be visible before the scripted frames run.
+var t0 = 0;
+System.addContinuousHandler(function(tick) {
+	var now = System.getTickCount();
+	if (t0 == 0) { t0 = now; return; }
+	if (now - t0 < 1800) return;   // the scripted input runs at frames 40-70
+
+	Debug.message("touch-input: downs=" + downCount + " ups=" + upCount + " moves=" + moveCount
+		+ " tap1=[" + tap1 + "] tap2=[" + tap2 + "] drag=[" + drag + "]"
+		+ " padDown=" + padDownKey + " padState=" + padStateWhileHeld + " padUp=" + padUpKey);
+
+	// two taps, at the points the fixture injected (window pixels == layer
+	// pixels here: the paint box matches the window)
+	if (downCount != 2) bad("expected 2 mouse downs from 2 taps, got " + downCount);
+	if (upCount != 2) bad("expected 2 mouse ups from 2 taps, got " + upCount);
+	if (tap1 != "100,60") bad("the first tap arrived at [" + tap1 + "], want [100,60]");
+	if (tap2 != "200,120") bad("the second tap arrived at [" + tap2 + "], want [200,120]");
+	if (moveCount < 1) bad("the drag between the finger down and up produced no mouse move");
+	if (drag == "") bad("the mouse move did not reach the dragged position (drag=[" + drag + "])");
+
+	// the pad button, as the engine's own game-pad key code
+	if (padDownKey != 448) bad("pad button A arrived as key " + padDownKey + ", want VK_PAD1 (448)");
+	if (padStateWhileHeld != 1) bad("System.getKeyState() did not report the pad button as held");
+	if (padUpKey != 448) bad("the pad release arrived as key " + padUpKey + ", want 448");
+
+	if (problems.length) {
+		Debug.message("touch-input: FAILED - " + problems.join(" | "));
+		System.exit(1);
+	}
+	Debug.message("touch-input: done");
+	System.exit(0);
+});

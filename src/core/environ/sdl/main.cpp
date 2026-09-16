@@ -223,8 +223,14 @@ int RunFrameLoop(int fps_limit)
 	// frame at 60 fps - the loop advanced exactly once).
 	const Uint64 frame_ms = fps_limit > 0 ? (Uint64)(1000 / fps_limit) : 0;
 	Uint64 next_frame = SDL_GetTicks64();
+	int frame_index = 0;
 
 	while (!krkr2sdl::HostQuitRequested()) {
+		// Scripted input (KRKR2_TEST_INPUT, Host.h): inject this frame's events
+		// into the queue before they are read, so tests can drive touch and
+		// game-pad input without the hardware.
+		krkr2sdl::HostPumpTestInput(frame_index++);
+
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			if (event.type == SDL_QUIT) {
@@ -309,6 +315,9 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	atexit(krkr2sdl::HostShutdown);
+
+	// Scripted input for the tests (KRKR2_TEST_INPUT, Host.h); a no-op unless set.
+	krkr2sdl::HostInitTestInput();
 
 	// Bring the audio device up before any script runs.  The engine would
 	// otherwise create it lazily on the first wave/movie play, and a buffer that

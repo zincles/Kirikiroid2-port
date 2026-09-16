@@ -85,6 +85,8 @@ directory (it is picked up automatically) or with the game path as an argument.
 Runs everything headless in about half a minute: boot and scripting, directory /
 `.xp3` / encrypted `.xp3` / `.7z` storage, the modal file selector, the API
 conformance suite, archive streaming, the `layerExMovie` extension (movie pixels
-in a layer, callbacks, looping), and the two regressions that only show up in
-optimised builds.  Compare a `Debug` build with a `RelWithDebInfo` one -- both
-matter, because optimised builds have caught crashes that `Debug` hid.
+in a layer, callbacks, looping), touch and game-pad input (replayed by
+`KRKR2_TEST_INPUT`, see `src/core/environ/sdl/Host.h`), and the two regressions
+that only show up in optimised builds.  Compare a `Debug` build with a
+`RelWithDebInfo` one -- both matter, because optimised builds have caught crashes
+that `Debug` hid.
